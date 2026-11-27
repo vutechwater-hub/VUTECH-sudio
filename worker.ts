@@ -419,17 +419,43 @@ productName, shortName, brand, manufacturer, model, rawModel, sku, categoryId, c
           env.GEMINI_RECOGNITION_MODEL,
         );
 
-        const { data, usedModel } = await callGeminiGenerateContentOnEdge({
-          apiKey,
-          candidateModels,
-          contents: [{ role: 'user', parts }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.1,
-          },
-        });
+        let rawText = '';
+        let usedModel = candidateModels[0];
 
-        const rawText = extractTextFromGeminiRestResponse(data);
+        // Bước 1: Gọi Gemini kết hợp Google Search Grounding để chủ động tra cứu trực tuyến bất kỳ sản phẩm nào
+        try {
+          const searchResult = await callGeminiGenerateContentOnEdge({
+            apiKey,
+            candidateModels,
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              temperature: 0.1,
+            },
+            tools: [{ googleSearch: {} }],
+          });
+          const candidateText = extractTextFromGeminiRestResponse(searchResult.data);
+          if (candidateText.includes('{') && candidateText.includes('}')) {
+            rawText = candidateText;
+            usedModel = `${searchResult.usedModel} + Google Search`;
+          }
+        } catch {
+          // Fallback sang chế độ JSON chuẩn nếu model không hỗ trợ googleSearch kèm ảnh
+        }
+
+        if (!rawText) {
+          const jsonResult = await callGeminiGenerateContentOnEdge({
+            apiKey,
+            candidateModels,
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.1,
+            },
+          });
+          rawText = extractTextFromGeminiRestResponse(jsonResult.data);
+          usedModel = jsonResult.usedModel;
+        }
+
         const parsed = parseJsonFromModelText(rawText);
 
         if (parsed.subjectBox && typeof parsed.subjectBox === 'object') {
@@ -467,6 +493,45 @@ productName, shortName, brand, manufacturer, model, rawModel, sku, categoryId, c
           },
           classified.httpStatus,
         );
+      }
+    }
+
+    // 2B. Tra cứu thông số sản phẩm trực tuyến mở (Open Web Product Spec Search) cho bất kỳ sản phẩm nào
+    if (url.pathname === '/api/open-web/search-product-specs' && request.method === 'POST') {
+      try {
+        const body = (await request.json().catch(() => ({}))) as {
+          query?: string;
+          visibleText?: string[];
+        };
+        const searchTerms = (body.query || (body.visibleText || []).slice(0, 5).join(' ')).trim();
+        if (!searchTerms || searchTerms.length < 2) {
+          return jsonResponse({ snippets: [] });
+        }
+        const searchQuery = `${searchTerms} water treatment specifications thông số kỹ thuật`;
+        const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
+        const response = await fetch(ddgUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          },
+        });
+        const html = await response.text();
+        const snippets: string[] = [];
+        const snippetRegex = /class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+        let match: RegExpExecArray | null;
+        while ((match = snippetRegex.exec(html)) !== null && snippets.length < 8) {
+          const clean = match[1]
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .replace(/&#x27;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (clean.length > 20) snippets.push(clean);
+        }
+        return jsonResponse({ query: searchTerms, snippets });
+      } catch {
+        return jsonResponse({ snippets: [] });
       }
     }
 

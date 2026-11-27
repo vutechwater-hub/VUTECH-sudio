@@ -303,40 +303,66 @@ async function startServer() {
       }
 
       const isMultiAngle = parts.length > 1;
-      const promptText = `Bạn là Hệ thống Smart Product Recognition Engine 2.0 chuyên ngành vật tư, thiết bị và công nghệ xử lý nước của CÔNG TY TNHH XNK VUTECH.
-${isMultiAngle ? `Người dùng đang cung cấp ${parts.length} ảnh góc chụp khác nhau của CÙNG MỘT SẢN PHẨM (mặt trước, mặt sau, tem nhãn, bao bì). Hãy hợp nhất toàn bộ chữ đọc được và thông số từ tất cả các ảnh. Nếu có thông tin mâu thuẫn giữa các ảnh, hãy ghi tên trường đó vào mảng conflictingFields.` : 'Hãy quan sát trực tiếp ảnh gốc của sản phẩm và tem nhãn/bao bì.'}
+      const promptText = `Bạn là Hệ thống Smart Product Recognition Engine 2.0 kết hợp Tra cứu Trực tuyến (Google Search Grounding) chuyên ngành vật tư, thiết bị và công nghệ xử lý nước của CÔNG TY TNHH XNK VUTECH.
+${isMultiAngle ? `Người dùng đang cung cấp ${parts.length} ảnh góc chụp khác nhau của CÙNG MỘT SẢN PHẨM. Hãy hợp nhất toàn bộ chữ đọc được và thông số từ tất cả các ảnh.` : 'Hãy quan sát trực tiếp ảnh gốc của sản phẩm, đọc toàn bộ chữ trên tem nhãn/bao bì/thân thiết bị và CHỦ ĐỘNG TÌM KIẾM TRÊN MẠNG (Google Search) thông tin kỹ thuật thực tế của sản phẩm đó.'}
 
-QUY TẮC BẮT BUỘC (TUYỆT ĐỐI TUÂN THỦ):
-1. ĐỌC CHỮ TRÊN TEM NHÃN / BAO BÌ TRƯỚC (OCR):
-   - Trích xuất NGUYÊN VĂN toàn bộ các dòng chữ, thương hiệu, mã hiệu, quy cách đọc được trên bao bì/tem nhãn vào mảng "visibleText" (ví dụ: ["EXTREPURE", "001X7(C100)", "STRONG ACID CATION EXCHANGE RESIN", "25 LITERS"]).
-2. KHÔNG BỊA ĐẶT THƯƠNG HIỆU HOẶC MODEL:
-   - Nếu trên bao bì/tem nhãn ghi thương hiệu nhà sản xuất (ví dụ: EXTREPURE, FROTEC, RUNMO, RUNXIN, PUROLITE, DUPONT, FILMTEC, TORAY, HYDRANAUTICS, VONTRON, HONSUN, HUAMO, PENTAIR, CANATURE, CNP, GRUNDFOS, SEKO, CANPURE, IONPURE...), BẮT BUỘC giữ đúng thương hiệu đó trong trường "brand".
-   - TUYỆT ĐỐI KHÔNG tự ý gắn "VUTECH" làm "brand" hoặc thay thế thương hiệu gốc trên bao bì bằng VUTECH (VUTECH là đơn vị nhập khẩu/phân phối trong trường "distributor", trừ khi sản phẩm là Hệ thống lọc nước RO/UF hoàn chỉnh do VUTECH lắp ráp).
-   - TUYỆT ĐỐI KHÔNG tự sinh mã giả như "VT-01", "VT-02", "VT-03", "VT-xxxx".
-   - Trường "rawModel" giữ nguyên văn mã in trên bao bì (ví dụ: "001X7(C100)"). Trường "model" chuẩn hóa ký hiệu toán học/khoảng trắng (ví dụ: "001×7 (C100)", "1812-75 GPD", "XLPFT-8040", "F63B1", "KXA-200").
-   - Nếu trên ảnh hoàn toàn không đọc được thương hiệu, trả về brand = "Chưa xác định thương hiệu" và fieldConfidence.brand < 0.5.
-   - Nếu trên ảnh hoàn toàn không đọc được mã model, trả về model = "Chưa xác định model", rawModel = "" và fieldConfidence.model < 0.5.
-3. PHÂN LOẠI CHÍNH XÁC VÀO 1 TRONG 10 NHÓM NGÀNH XỬ LÝ NƯỚC ("categoryId" và "category"):
-   - "01_ro_membrane": "Màng lọc RO" (1812, 2012, 2812, 3012, 3013, 4040, 6040, 8040, BW, SW, XLP, ULP...)
-   - "02_uf_membrane": "Màng lọc UF" (Màng UF PAN, PVDF, PES, sợi rỗng, 40m²...)
-   - "03_ion_resin": "Hạt nhựa trao đổi ion" (Hạt nhựa Cation, Anion, Mixed Bed, 001×7, 001×8, C100...)
-   - "04_filter_media": "Vật liệu lọc nước" (Than hoạt tính, Cát thạch anh, Cát mangan, Birm, Corosex, ODM-2F...)
-   - "05_vessels_tanks": "Cột lọc và bồn chứa" (Cột lọc FRP/Composite 0844..3672, Cột Inox, Bồn muối, Bồn hóa chất...)
-   - "06_control_valves": "Van điều khiển" (Van tự động RUNXIN F63B1/F65B1/F67C1/F71B1, Van cơ 3 ngả/5 ngả, Autotrol, Clack...)
-   - "07_membrane_housings": "Vỏ màng lọc" (Vỏ màng RO dân dụng, Vỏ màng Composite/Inox 4040, 8040...)
-   - "08_edi_equipment": "Thiết bị EDI" (Module EDI KXA-200, Canpure, Ionpure...)
-   - "09_auxiliary_equipment": "Thiết bị phụ trợ" (Bơm cao áp CNP/Grundfos, Bơm định lượng, Đồng hồ áp, Lưu lượng kế, Cảm biến TDS/Độ dẫn, Tủ điện PLC...)
-   - "10_complete_systems": "Hệ thống xử lý nước hoàn chỉnh" (Hệ thống RO công nghiệp, Hệ thống UF, Hệ thống EDI, Hệ thống lọc tổng...)
-4. CHUẨN HÓA TÊN SẢN PHẨM ("productName" và "shortName"):
-   - Công thức: [Loại sản phẩm cụ thể] + [Thương hiệu] + [Model chuẩn] + [Thông số phân biệt chính nếu đã xác thực].
-   - Ví dụ bắt buộc: Nếu đọc được "EXTREPURE" + "001X7(C100)" + "STRONG ACID CATION EXCHANGE RESIN" -> productName = "Hạt Nhựa Cation EXTREPURE 001×7 (C100)", shortName = "Hạt Nhựa Cation EXTREPURE 001×7".
-   - Ví dụ khác: "Màng RO FROTEC 1812-75 GPD", "Màng RO Công Nghiệp FROTEC XLPFT-8040", "Van Tự Động Làm Mềm Nước RUNXIN F63B1", "Module EDI KXA-200", "Cột Lọc Composite FRP 1054".
-5. THÔNG SỐ KỸ THUẬT ĐỘNG THEO ĐÚNG CHỦNG LOẠI ("technicalSpecifications"):
-   - Chỉ trích xuất các thông số thực sự đọc được trên tem nhãn (source = "IMAGE_LABEL") hoặc thuộc chuẩn kỹ thuật đã xác thực của chính model đó (source = "PRODUCT_CATALOG").
-   - TUYỆT ĐỐI KHÔNG gắn thông số của van điện/máy lọc (như "Nguồn điện DC 12V - 1.5A", "3 chế độ lọc và sục rửa", "Lưu lượng 2 m³/giờ") cho bao Hạt nhựa trao đổi ion hoặc Vật liệu lọc!
-   - Đối với Hạt nhựa trao đổi ion (03_ion_resin): chỉ dùng các thông số như Loại hạt nhựa, Cấu trúc Polymer, Nhóm chức năng, Dạng ion (Na⁺), Tổng dung lượng trao đổi (eq/L), Kích thước hạt (mm), Độ ẩm (%), Quy cách đóng gói (25 Lít/bao).
-6. VÙNG KHUNG HÌNH SẢN PHẨM ("subjectBox"):
-   - Tọa độ chuẩn hóa từ 0.0 đến 1.0 (x, y, w, h) bao sát sản phẩm chính trong ảnh đầu tiên.`;
+NHIỆM VỤ BẮT BUỘC (LINH ĐỘNG VỚI BẤT KỲ SẢN PHẨM NÀO ĐƯỢC TẢI LÊN):
+1. ĐỌC CHỮ TRÊN TEM NHÃN / BAO BÌ / THÂN MÁY (OCR):
+   - Trích xuất NGUYÊN VĂN mọi dòng chữ, thương hiệu, mã model, thông số in trên ảnh vào mảng "visibleText".
+2. CHỦ ĐỘNG TRA CỨU TRỰC TUYẾN CHO BẤT KỲ SẢN PHẨM MỚI NÀO:
+   - Ngay khi đọc được Thương hiệu + Mã Model (hoặc nhìn thấy hình dáng thiết bị/vật tư bất kỳ của bất kỳ hãng nào trên thị trường), hãy chủ động dùng công cụ tìm kiếm trực tuyến để tra cứu đúng Datasheet / thông số kỹ thuật chuẩn của sản phẩm đó trên mạng.
+   - Giữ đúng Thương hiệu nhà sản xuất gốc trong trường "brand" và mã model gốc trong "rawModel", mã model chuẩn hóa trong "model".
+   - Tuyệt đối không tự bịa mã giả "VT-01", "VT-02".
+3. PHÂN LOẠI VÀO 1 TRONG 10 NHÓM NGÀNH XỬ LÝ NƯỚC ("categoryId" và "category"):
+   - "01_ro_membrane": "Màng lọc RO"
+   - "02_uf_membrane": "Màng lọc UF"
+   - "03_ion_resin": "Hạt nhựa trao đổi ion"
+   - "04_filter_media": "Vật liệu lọc nước"
+   - "05_vessels_tanks": "Cột lọc và bồn chứa"
+   - "06_control_valves": "Van điều khiển"
+   - "07_membrane_housings": "Vỏ màng lọc"
+   - "08_edi_equipment": "Thiết bị EDI"
+   - "09_auxiliary_equipment": "Thiết bị phụ trợ"
+   - "10_complete_systems": "Hệ thống xử lý nước hoàn chỉnh"
+4. TỰ ĐỘNG CHUẨN HÓA TÊN VÀ ĐIỀN ĐẦY ĐỦ CÁC VỊ TRÍ CẦN THIẾT:
+   - "productName": [Loại sản phẩm cụ thể] + [Thương hiệu] + [Model chuẩn] + [Thông số phân biệt chính nếu có].
+   - "shortName": Tên ngắn gọn súc tích để hiển thị đẹp trên banner thiết kế.
+   - "technicalSpecifications": Điền đầy đủ 3 đến 6 thông số kỹ thuật thực tế chính xác nhất của sản phẩm đó (từ chữ trên ảnh kết hợp tra cứu datasheet trực tuyến trên mạng), mỗi thông số có { "name": "...", "value": "...", "unit": "...", "source": "IMAGE_LABEL" hoặc "DATASHEET", "confidence": 0.95, "verified": true }.
+   - "applications": Các ứng dụng thực tế của sản phẩm.
+   - "subjectBox": Tọa độ vùng sản phẩm chính trong ảnh từ 0.0 đến 1.0 ({ "x": 0.12, "y": 0.08, "w": 0.76, "h": 0.84 }).
+
+Trả về DUY NHẤT một đối tượng JSON hợp lệ (không bọc giải thích thừa bên ngoài) theo đúng cấu trúc:
+{
+  "productName": "...",
+  "shortName": "...",
+  "brand": "...",
+  "manufacturer": "...",
+  "model": "...",
+  "rawModel": "...",
+  "sku": "...",
+  "categoryId": "...",
+  "category": "...",
+  "subCategory": "...",
+  "material": "...",
+  "origin": "...",
+  "packaging": "...",
+  "applications": ["..."],
+  "visibleText": ["..."],
+  "technicalSpecifications": [
+    { "name": "...", "value": "...", "unit": "...", "source": "DATASHEET", "confidence": 0.95, "verified": true }
+  ],
+  "confidence": 0.96,
+  "fieldConfidence": {
+    "brand": 0.96,
+    "model": 0.96,
+    "category": 0.96,
+    "productName": 0.96,
+    "specifications": 0.95
+  },
+  "warnings": [],
+  "conflictingFields": [],
+  "subjectBox": { "x": 0.12, "y": 0.08, "w": 0.76, "h": 0.84 }
+}`;
 
       parts.push({ text: promptText });
 
@@ -345,116 +371,144 @@ QUY TẮC BẮT BUỘC (TUYỆT ĐỐI TUÂN THỦ):
       let usedModelName = selectedModel;
       let lastErr: unknown = null;
 
+      // Bước 1: Ưu tiên gọi model kết hợp Google Search Grounding để tra cứu trực tuyến bất kỳ sản phẩm nào
       for (const candidateModel of fallbackCandidates) {
         try {
           const response = await ai.models.generateContent({
             model: candidateModel,
             contents: { parts },
             config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  productName: { type: Type.STRING },
-                  shortName: { type: Type.STRING },
-                  brand: { type: Type.STRING },
-                  manufacturer: { type: Type.STRING },
-                  model: { type: Type.STRING },
-                  rawModel: { type: Type.STRING },
-                  sku: { type: Type.STRING },
-                  categoryId: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  subCategory: { type: Type.STRING },
-                  material: { type: Type.STRING },
-                  origin: { type: Type.STRING },
-                  packaging: { type: Type.STRING },
-                  applications: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  visibleText: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  technicalSpecifications: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        name: { type: Type.STRING },
-                        value: { type: Type.STRING },
-                        unit: { type: Type.STRING },
-                        source: { type: Type.STRING },
-                        confidence: { type: Type.NUMBER },
-                        verified: { type: Type.BOOLEAN },
-                      },
-                      required: ['name', 'value', 'source', 'confidence', 'verified'],
-                    },
-                  },
-                  confidence: { type: Type.NUMBER },
-                  fieldConfidence: {
-                    type: Type.OBJECT,
-                    properties: {
-                      brand: { type: Type.NUMBER },
-                      model: { type: Type.NUMBER },
-                      category: { type: Type.NUMBER },
-                      productName: { type: Type.NUMBER },
-                      specifications: { type: Type.NUMBER },
-                    },
-                    required: ['brand', 'model', 'category', 'productName', 'specifications'],
-                  },
-                  warnings: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  conflictingFields: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  subjectBox: {
-                    type: Type.OBJECT,
-                    properties: {
-                      x: { type: Type.NUMBER },
-                      y: { type: Type.NUMBER },
-                      w: { type: Type.NUMBER },
-                      h: { type: Type.NUMBER },
-                    },
-                    required: ['x', 'y', 'w', 'h'],
-                  },
-                },
-                required: [
-                  'productName',
-                  'shortName',
-                  'brand',
-                  'model',
-                  'rawModel',
-                  'categoryId',
-                  'category',
-                  'subCategory',
-                  'visibleText',
-                  'technicalSpecifications',
-                  'confidence',
-                  'fieldConfidence',
-                  'subjectBox',
-                ],
-              },
+              tools: [{ googleSearch: {} }],
             },
           });
-          responseText = (response.text ?? '{}').trim();
-          usedModelName = candidateModel;
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err;
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('404') || msg.includes('NOT_FOUND')) {
-            continue;
+          const rawCandidateText = (response.text ?? '').trim();
+          const firstB = rawCandidateText.indexOf('{');
+          const lastB = rawCandidateText.lastIndexOf('}');
+          if (firstB !== -1 && lastB > firstB) {
+            responseText = rawCandidateText.slice(firstB, lastB + 1);
+            usedModelName = `${candidateModel} + Google Search`;
+            lastErr = null;
+            break;
           }
-          throw err;
+        } catch {
+          // Nếu model/môi trường không hỗ trợ đồng thời googleSearch + multimodal, chuyển sang Bước 2 structured JSON
+          continue;
         }
       }
 
-      if (lastErr) {
+      // Bước 2: Nếu Bước 1 chưa lấy được JSON, gọi chế độ Structured JSON Schema chuẩn
+      if (responseText === '{}') {
+        for (const candidateModel of fallbackCandidates) {
+          try {
+            const response = await ai.models.generateContent({
+              model: candidateModel,
+              contents: { parts },
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    productName: { type: Type.STRING },
+                    shortName: { type: Type.STRING },
+                    brand: { type: Type.STRING },
+                    manufacturer: { type: Type.STRING },
+                    model: { type: Type.STRING },
+                    rawModel: { type: Type.STRING },
+                    sku: { type: Type.STRING },
+                    categoryId: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                    subCategory: { type: Type.STRING },
+                    material: { type: Type.STRING },
+                    origin: { type: Type.STRING },
+                    packaging: { type: Type.STRING },
+                    applications: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    visibleText: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    technicalSpecifications: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          name: { type: Type.STRING },
+                          value: { type: Type.STRING },
+                          unit: { type: Type.STRING },
+                          source: { type: Type.STRING },
+                          confidence: { type: Type.NUMBER },
+                          verified: { type: Type.BOOLEAN },
+                        },
+                        required: ['name', 'value', 'source', 'confidence', 'verified'],
+                      },
+                    },
+                    confidence: { type: Type.NUMBER },
+                    fieldConfidence: {
+                      type: Type.OBJECT,
+                      properties: {
+                        brand: { type: Type.NUMBER },
+                        model: { type: Type.NUMBER },
+                        category: { type: Type.NUMBER },
+                        productName: { type: Type.NUMBER },
+                        specifications: { type: Type.NUMBER },
+                      },
+                      required: ['brand', 'model', 'category', 'productName', 'specifications'],
+                    },
+                    warnings: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    conflictingFields: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    subjectBox: {
+                      type: Type.OBJECT,
+                      properties: {
+                        x: { type: Type.NUMBER },
+                        y: { type: Type.NUMBER },
+                        w: { type: Type.NUMBER },
+                        h: { type: Type.NUMBER },
+                      },
+                      required: ['x', 'y', 'w', 'h'],
+                    },
+                  },
+                  required: [
+                    'productName',
+                    'shortName',
+                    'brand',
+                    'model',
+                    'rawModel',
+                    'categoryId',
+                    'category',
+                    'subCategory',
+                    'visibleText',
+                    'technicalSpecifications',
+                    'confidence',
+                    'fieldConfidence',
+                    'subjectBox',
+                  ],
+                },
+              },
+            });
+            responseText = (response.text ?? '{}').trim();
+            usedModelName = candidateModel;
+            lastErr = null;
+            break;
+          } catch (err) {
+            lastErr = err;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('404') || msg.includes('NOT_FOUND')) {
+              continue;
+            }
+            throw err;
+          }
+        }
+      }
+
+      if (lastErr && responseText === '{}') {
         throw lastErr;
       }
 
@@ -493,6 +547,58 @@ QUY TẮC BẮT BUỘC (TUYỆT ĐỐI TUÂN THỦ):
           timestamp: new Date().toISOString(),
         },
       });
+    }
+  });
+
+  /**
+   * ENDPOINT TRA CỨU TRỰC TUYẾN MỞ (KHÔNG CẦN API KEY):
+   * Khi chưa có GEMINI_API_KEY, sau khi trình duyệt quét OCR đọc được chữ trên tem nhãn của BẤT KỲ sản phẩm nào,
+   * endpoint này tự động truy vấn thông tin kỹ thuật trực tuyến trên mạng theo các cụm chữ OCR đó
+   * để trích xuất thông số thực tế (Công suất, Lưu lượng, Kích thước, Áp suất, Vật liệu, Quy cách...).
+   */
+  app.post('/api/open-web/search-product-specs', async (req, res) => {
+    try {
+      const { query, visibleText = [] } = req.body as {
+        query?: string;
+        visibleText?: string[];
+      };
+
+      const searchTerms = (query || visibleText.slice(0, 5).join(' ')).trim();
+      if (!searchTerms || searchTerms.length < 2) {
+        res.json({ snippets: [] });
+        return;
+      }
+
+      const searchQuery = `${searchTerms} water treatment specifications thông số kỹ thuật`;
+      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
+      const response = await fetch(ddgUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      });
+
+      const html = await response.text();
+      const snippets: string[] = [];
+      const snippetRegex = /class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
+      let match: RegExpExecArray | null;
+      while ((match = snippetRegex.exec(html)) !== null && snippets.length < 8) {
+        const clean = match[1]
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/&#x27;/g, "'")
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (clean.length > 20) {
+          snippets.push(clean);
+        }
+      }
+
+      res.json({ query: searchTerms, snippets });
+    } catch {
+      res.json({ snippets: [] });
     }
   });
 
