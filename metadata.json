@@ -1,0 +1,6 @@
+{
+  "name": "VUTECH Brand Studio",
+  "description": "Studio thiết kế, chỉnh sửa và chuẩn hóa hình ảnh sản phẩm thiết bị lọc nước cho Công ty TNHH XNK VUTECH chuẩn Website và Facebook chất lượng cao đến 4K.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
