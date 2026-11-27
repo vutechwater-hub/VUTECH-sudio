@@ -6,10 +6,13 @@ import {
   CheckCircle2,
   Clock,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
+  FileText,
   FileWarning,
   FolderArchive,
+  Globe,
   Grid,
   Layers,
   Lock,
@@ -45,6 +48,11 @@ import {
   renderGroupSlideCanvas,
 } from '../utils/multiChannelRenderer';
 import { buildAltText, buildSeoFileName } from '../utils/smartExportEngine';
+import {
+  enrichTechnicalDocsFromFile,
+  enrichTechnicalDocsOnline,
+  type TechnicalDocEnrichmentResult,
+} from '../utils/technicalDocEnricher';
 import { createPendingValidation, validateGroupAsset } from '../utils/validationEngine';
 import { GroupGalleryModal } from './GroupGalleryModal';
 import { PlatformStandardsManager } from './PlatformStandardsManager';
@@ -56,6 +64,7 @@ interface MultiChannelPreviewProps {
   activeItemId: string;
   onSelectBatchItem: (id: string) => void;
   exportFormat: ExportFormat;
+  onUpdateConfig?: (patch: Partial<StudioConfig>) => void;
   onOpenInEditor: (patch: Partial<StudioConfig>) => void;
 }
 
@@ -64,7 +73,8 @@ function buildInitialAssetsForGroup(
   settings: GroupRuntimeSettings,
   studioConfig: StudioConfig,
   batchItems: Array<{ id: string; config: StudioConfig }>,
-  existing?: GroupImageAsset[]
+  existing?: GroupImageAsset[],
+  cachedTechNotesBySlideKey?: Record<string, string>
 ): GroupImageAsset[] {
   const sizeObj =
     standard.sizeOptions.find((s) => s.id === settings.sizeId) ?? standard.sizeOptions[0];
@@ -118,14 +128,13 @@ function buildInitialAssetsForGroup(
       };
     });
 
-    const merged = [
+    return [
       ...fromBatch,
       ...existingExtra.map((ex, i) => ({
         ...ex,
         slotIndex: fromBatch.length + i + 1,
       })),
     ];
-    return merged;
   }
 
   const prevByKey = new Map((existing ?? []).map((a) => [a.slideKey, a]));
@@ -148,6 +157,8 @@ function buildInitialAssetsForGroup(
       return { ...prev, slotIndex };
     }
 
+    const enrichedNotes = cachedTechNotesBySlideKey?.[bp.key] ?? prev?.customTechnicalNotes;
+
     const baseAsset: GroupImageAsset = {
       id: prev?.id ?? `${standard.id}__${bp.key}`,
       groupId: standard.id,
@@ -161,7 +172,7 @@ function buildInitialAssetsForGroup(
       skipped: prev?.skipped ?? false,
       customSourceUrl: prev?.customSourceUrl,
       customSourceName: prev?.customSourceName,
-      customTechnicalNotes: prev?.customTechnicalNotes,
+      customTechnicalNotes: enrichedNotes,
       previewDataUrl: undefined,
       renderedWidth: sizeObj?.width ?? 1200,
       renderedHeight: sizeObj?.height ?? 1200,
@@ -198,6 +209,8 @@ function buildInitialAssetsForGroup(
         studioConfig,
         totalActiveInGroup: finalBlueprints.length,
       });
+    } else if (baseAsset.status === 'missing-data') {
+      baseAsset.status = 'not-generated';
     }
 
     return baseAsset;
@@ -279,7 +292,10 @@ function mapGroupToEditorPatch(
   groupId: DesignGroupId,
   settings: GroupRuntimeSettings
 ): Partial<StudioConfig> {
-  const map: Record<DesignGroupId, { template: TemplateId; aspectRatio: StudioConfig['aspectRatio']; patch?: Partial<StudioConfig> }> = {
+  const map: Record<
+    DesignGroupId,
+    { template: TemplateId; aspectRatio: StudioConfig['aspectRatio']; patch?: Partial<StudioConfig> }
+  > = {
     '01_shopee_cover': {
       template: 'shopee-cover',
       aspectRatio: '1:1',
@@ -311,7 +327,12 @@ function mapGroupToEditorPatch(
     },
     '06_minimal_luxury': {
       template: 'minimal-luxury',
-      aspectRatio: settings.sizeId === '1728x2160' ? '3:4' : settings.sizeId === '1440x2560' ? '9:16' : '1:1',
+      aspectRatio:
+        settings.sizeId === '1728x2160'
+          ? '3:4'
+          : settings.sizeId === '1440x2560'
+          ? '9:16'
+          : '1:1',
       patch: { showSpecsPanel: true, showContactFooter: true },
     },
     '07_copyright_watermark': {
@@ -333,12 +354,18 @@ export function MultiChannelPreview({
   batchItems,
   activeItemId,
   onSelectBatchItem,
+  onUpdateConfig,
   onOpenInEditor,
 }: MultiChannelPreviewProps) {
   const [registry, setRegistry] = useState<PlatformStandardEntry[]>(() => loadPlatformRegistry());
   const [settingsByGroup, setSettingsByGroup] = useState<Record<DesignGroupId, GroupRuntimeSettings>>(() =>
     createDefaultGroupSettings(loadPlatformRegistry())
   );
+
+  // Per-product cached technical notes by slideKey so switching between batch items preserves AI-enriched technical docs
+  const techNotesCacheByItemRef = useRef<Record<string, Record<string, string>>>({});
+  const autoEnrichedSignatureSetRef = useRef<Set<string>>(new Set());
+
   const [assetsByGroup, setAssetsByGroup] = useState<Record<DesignGroupId, GroupImageAsset[]>>(() => {
     const reg = loadPlatformRegistry();
     const sets = createDefaultGroupSettings(reg);
@@ -360,6 +387,16 @@ export function MultiChannelPreview({
     }
     return init;
   });
+
+  // AI Technical Documentation Enrichment State (Priority 1 Online Search + Method 2 File Upload)
+  const [isEnrichingTechDocs, setIsEnrichingTechDocs] = useState(false);
+  const [techEnrichStatus, setTechEnrichStatus] = useState<{
+    mode: 'online-search' | 'file-upload';
+    summary: string;
+    webSources: Array<{ title: string; uri: string }>;
+    error?: string;
+  } | null>(null);
+  const globalTechFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Modals state
   const [galleryState, setGalleryState] = useState<{
@@ -485,7 +522,6 @@ export function MultiChannelPreview({
 
       const canvas = document.createElement('canvas');
       try {
-        // Group 04 preview uses first selected Facebook ratio (default 4:5)
         let overrideDimensions:
           | { width: number; height: number; aspectLabel?: string; ratioKey?: '4:5' | '1:1' | '9:16' | '1.91:1' }
           | undefined;
@@ -501,7 +537,6 @@ export function MultiChannelPreview({
           };
         }
 
-        // Render at clean full target resolution (capped cleanly for interactive memory safety on 4K only during preview, while reporting target dims)
         const dims = await renderGroupSlideCanvas({
           canvas,
           groupId,
@@ -510,7 +545,7 @@ export function MultiChannelPreview({
           settings,
           studioConfig: curConfig,
           overrideDimensions,
-          previewScaleMaxEdge: groupId === '07_copyright_watermark' ? 1600 : 1600,
+          previewScaleMaxEdge: 1600,
         });
 
         setAssetsByGroup((prev) => ({
@@ -679,7 +714,6 @@ export function MultiChannelPreview({
             }));
           }
 
-          // Yield cleanly to browser paint loop
           await new Promise((r) => window.setTimeout(r, 18));
         }
       };
@@ -705,10 +739,175 @@ export function MultiChannelPreview({
     [renderAndValidateAsset]
   );
 
-  // Sync assets when active product / studio config changes, then auto-render slot #1 of each group
+  /**
+   * Applies AI-enriched technical documentation (from Priority 1 Online Search or Method 2 File Upload)
+   * across all matching slides of Shopee (Group 02), Website (Group 03), and Industrial Tech (Group 05),
+   * then immediately renders & validates those slides!
+   */
+  const applyEnrichmentToWorkspace = useCallback(
+    async (
+      result: TechnicalDocEnrichmentResult,
+      options?: { targetAssetId?: string; syncCoreConfig?: boolean; silentQueue?: boolean }
+    ) => {
+      const slideMap = result.slides ?? {};
+      const itemCache = {
+        ...(techNotesCacheByItemRef.current[activeItemId] ?? {}),
+        ...slideMap,
+      };
+      techNotesCacheByItemRef.current[activeItemId] = itemCache;
+
+      const tasksToRender: Array<{ groupId: DesignGroupId; assetId: string; label: string }> = [];
+      const nextAll = { ...assetsRef.current };
+
+      for (const std of registryRef.current) {
+        const list = nextAll[std.id] ?? [];
+        nextAll[std.id] = list.map((asset) => {
+          if (asset.approved) return asset; // Respect approval lock
+
+          const mappedText =
+            slideMap[asset.slideKey] ||
+            (asset.requiresTechnicalDoc
+              ? slideMap['tech-03-drawing'] || slideMap['tech-02-deep-specs']
+              : asset.requiresVerifiedCert
+              ? slideMap['sp-sub-08-packaging-cert']
+              : undefined);
+
+          const isTargetSlide = options?.targetAssetId && asset.id === options.targetAssetId;
+
+          if (!mappedText && !isTargetSlide) return asset;
+
+          const updated: GroupImageAsset = {
+            ...asset,
+            customTechnicalNotes: mappedText ? mappedText.trim() : asset.customTechnicalNotes,
+            customSourceUrl:
+              isTargetSlide && result.uploadedVisualDataUrl
+                ? result.uploadedVisualDataUrl
+                : asset.customSourceUrl,
+            customSourceName:
+              isTargetSlide && result.uploadedFileName
+                ? result.uploadedFileName
+                : asset.customSourceName,
+          };
+
+          if (!isSlideMissingVerifiedData(updated) && updated.status === 'missing-data') {
+            updated.status = 'not-generated';
+          }
+
+          tasksToRender.push({
+            groupId: std.id,
+            assetId: updated.id,
+            label: `${std.shortName} · ${updated.shortTitle}`,
+          });
+
+          return updated;
+        });
+      }
+
+      assetsRef.current = nextAll;
+      setAssetsByGroup(nextAll);
+
+      // If Method 2 (file upload) extracted 3 core specs, sync them cleanly with the main product config
+      if (
+        options?.syncCoreConfig &&
+        onUpdateConfig &&
+        Array.isArray(result.coreSpecs) &&
+        result.coreSpecs.length >= 3
+      ) {
+        onUpdateConfig({
+          specs: [
+            result.coreSpecs[0] || configRef.current.specs[0],
+            result.coreSpecs[1] || configRef.current.specs[1],
+            result.coreSpecs[2] || configRef.current.specs[2],
+          ],
+          ...(result.standardizedModelCode ? { modelCode: result.standardizedModelCode } : {}),
+        });
+      }
+
+      setTechEnrichStatus({
+        mode: result.mode,
+        summary: result.sourceSummary,
+        webSources: result.webSources ?? [],
+      });
+
+      if (tasksToRender.length > 0) {
+        await runGenerationQueue(tasksToRender, { silent: options?.silentQueue });
+      }
+    },
+    [activeItemId, onUpdateConfig, runGenerationQueue]
+  );
+
+  // Priority 1 Handler: Proactive AI Online Search Grounding
+  const handleEnrichOnline = useCallback(
+    async (options?: { silentAuto?: boolean }) => {
+      if (isEnrichingTechDocs) return;
+      setIsEnrichingTechDocs(true);
+      if (!options?.silentAuto) {
+        setTechEnrichStatus(null);
+      }
+      try {
+        const enrichment = await enrichTechnicalDocsOnline(configRef.current);
+        await applyEnrichmentToWorkspace(enrichment, {
+          syncCoreConfig: false,
+          silentQueue: options?.silentAuto,
+        });
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Không thể tra cứu trực tuyến lúc này. Vui lòng dùng Phương án 2 (Tải file thông tin sản phẩm).';
+        if (!options?.silentAuto) {
+          setTechEnrichStatus({
+            mode: 'online-search',
+            summary: '',
+            webSources: [],
+            error: msg,
+          });
+        }
+      } finally {
+        setIsEnrichingTechDocs(false);
+      }
+    },
+    [isEnrichingTechDocs, applyEnrichmentToWorkspace]
+  );
+
+  // Method 2 Handler: Upload Product File (PDF, Image, TXT, CSV, JSON) for AI Standardization & Mapping
+  const handleEnrichFromFile = useCallback(
+    async (file: File, targetAssetId?: string) => {
+      if (!file || isEnrichingTechDocs) return;
+      setIsEnrichingTechDocs(true);
+      setTechEnrichStatus(null);
+      try {
+        const enrichment = await enrichTechnicalDocsFromFile(configRef.current, file);
+        await applyEnrichmentToWorkspace(enrichment, {
+          targetAssetId,
+          syncCoreConfig: true,
+          silentQueue: false,
+        });
+      } catch (err) {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Không thể phân tích file tải lên. Vui lòng kiểm tra định dạng file.';
+        setTechEnrichStatus({
+          mode: 'file-upload',
+          summary: '',
+          webSources: [],
+          error: msg,
+        });
+      } finally {
+        setIsEnrichingTechDocs(false);
+      }
+    },
+    [isEnrichingTechDocs, applyEnrichmentToWorkspace]
+  );
+
+  // Sync assets when active product / studio config changes, render slot #1 of each group,
+  // and PROACTIVELY run Priority 1 (AI Online Search) if technical slides need data!
   useEffect(() => {
     const nextMap = {} as Record<DesignGroupId, GroupImageAsset[]>;
     const heroTasks: Array<{ groupId: DesignGroupId; assetId: string; label: string }> = [];
+    const cachedNotes = techNotesCacheByItemRef.current[activeItemId];
+    let hasMissingTechSlides = false;
 
     for (const std of registryRef.current) {
       const rebuilt = buildInitialAssetsForGroup(
@@ -716,10 +915,18 @@ export function MultiChannelPreview({
         settingsRef.current[std.id],
         config,
         batchItems,
-        assetsRef.current[std.id]
+        assetsRef.current[std.id],
+        cachedNotes
       );
       nextMap[std.id] = rebuilt;
-      const firstReadyTarget = rebuilt.find((a) => !a.skipped && !a.approved && !isSlideMissingVerifiedData(a));
+
+      if (rebuilt.some((a) => !a.skipped && a.status === 'missing-data')) {
+        hasMissingTechSlides = true;
+      }
+
+      const firstReadyTarget = rebuilt.find(
+        (a) => !a.skipped && !a.approved && !isSlideMissingVerifiedData(a)
+      );
       if (firstReadyTarget) {
         heroTasks.push({
           groupId: std.id,
@@ -744,8 +951,15 @@ export function MultiChannelPreview({
     });
 
     // Silently render cover/first slide of all 7 groups so cards show real visuals immediately
-    const timer = window.setTimeout(() => {
-      runGenerationQueue(heroTasks, { silent: true }).catch(() => {});
+    const timer = window.setTimeout(async () => {
+      await runGenerationQueue(heroTasks, { silent: true }).catch(() => {});
+
+      // Priority 1: Proactively search online via AI for any product whose technical slides are not yet enriched
+      const autoSig = `${activeItemId}::${config.productName}::${config.modelCode}`;
+      if (hasMissingTechSlides && !autoEnrichedSignatureSetRef.current.has(autoSig)) {
+        autoEnrichedSignatureSetRef.current.add(autoSig);
+        handleEnrichOnline({ silentAuto: true }).catch(() => {});
+      }
     }, 60);
 
     return () => window.clearTimeout(timer);
@@ -766,7 +980,6 @@ export function MultiChannelPreview({
         return nextAll;
       });
 
-      // Re-render currently visible slide of that group immediately for real-time feedback
       const currentActiveId =
         activeSlideIdByGroup[groupId] || assetsRef.current[groupId]?.[0]?.id;
       if (currentActiveId) {
@@ -784,6 +997,12 @@ export function MultiChannelPreview({
         const updatedList = (prev[groupId] ?? []).map((a) => {
           if (a.id !== assetId) return a;
           const merged = { ...a, ...patch };
+          if (patch.customTechnicalNotes !== undefined) {
+            techNotesCacheByItemRef.current[activeItemId] = {
+              ...(techNotesCacheByItemRef.current[activeItemId] ?? {}),
+              [a.slideKey]: patch.customTechnicalNotes,
+            };
+          }
           if (patch.customSourceUrl !== undefined || patch.customTechnicalNotes !== undefined) {
             if (!isSlideMissingVerifiedData(merged) && merged.status === 'missing-data') {
               merged.status = 'not-generated';
@@ -802,7 +1021,7 @@ export function MultiChannelPreview({
         }, 50);
       }
     },
-    [renderAndValidateAsset]
+    [activeItemId, renderAndValidateAsset]
   );
 
   const handleReorderAssets = useCallback(
@@ -848,7 +1067,7 @@ export function MultiChannelPreview({
       const list = assetsRef.current[groupId] ?? [];
       if (!std) continue;
       for (const a of list) {
-        if (a.skipped || a.approved) continue; // Never overwrite approved slides automatically!
+        if (a.skipped || a.approved) continue;
         tasks.push({
           groupId,
           assetId: a.id,
@@ -1109,6 +1328,123 @@ export function MultiChannelPreview({
               </button>
             );
           })}
+        </div>
+      )}
+
+      {/* AI Technical Documentation Enrichment Hub: Priority 1 (Online Search) + Method 2 (Manual File Upload + AI Parse) */}
+      {activeSubView === 'groups' && (
+        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#0052B4] shrink-0" />
+                <h2 className="text-sm font-bold text-slate-900">
+                  Trung Tâm Bổ Sung Tài Liệu Kỹ Thuật &amp; Chuẩn Hóa Dữ Liệu Hình Ảnh AI
+                </h2>
+              </div>
+              <p className="text-xs text-slate-600">
+                Tự động điền thông số kích thước, bản vẽ, mô hình cắt lớp, sơ đồ nguyên lý &amp; chứng nhận vào đúng quy chuẩn từng nhóm ảnh (Shopee · Website · Kỹ thuật Công nghiệp).
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {/* Priority 1: Proactive Online Search */}
+              <button
+                type="button"
+                disabled={isEnrichingTechDocs}
+                onClick={() => handleEnrichOnline({ silentAuto: false })}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0052B4] hover:bg-[#072A5E] disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
+              >
+                <Globe className={`w-3.5 h-3.5 ${isEnrichingTechDocs ? 'animate-spin' : ''}`} />
+                <span>
+                  {isEnrichingTechDocs
+                    ? 'AI đang tìm kiếm & phân tích...'
+                    : 'Ưu tiên 1: AI Tìm kiếm Trực tuyến & Bổ sung theo chuẩn'}
+                </span>
+              </button>
+
+              {/* Method 2: Manual File Upload for AI Analysis & Multi-Channel Mapping */}
+              <input
+                ref={globalTechFileInputRef}
+                type="file"
+                accept=".pdf,.txt,.csv,.json,.md,image/*,application/pdf"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    handleEnrichFromFile(file);
+                  }
+                  e.target.value = '';
+                }}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={isEnrichingTechDocs}
+                onClick={() => globalTechFileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0052B4] bg-[#0052B4]/8 hover:bg-[#0052B4]/15 border border-[#0052B4]/25 disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Phương án 2: Up file sản phẩm (PDF/Ảnh/TXT/CSV) để AI phân tích</span>
+              </button>
+            </div>
+          </div>
+
+          {techEnrichStatus && (
+            <div
+              className={`rounded-lg px-3.5 py-2.5 border text-xs flex flex-wrap items-center justify-between gap-3 ${
+                techEnrichStatus.error
+                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+              }`}
+            >
+              <div className="space-y-1 min-w-0">
+                <div className="font-semibold flex items-center gap-1.5">
+                  {techEnrichStatus.error ? (
+                    <>
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>{techEnrichStatus.error}</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>
+                        {techEnrichStatus.mode === 'online-search'
+                          ? 'Đã tự động tra cứu trực tuyến & bổ sung tài liệu kỹ thuật:'
+                          : 'Đã phân tích file tải lên & đẩy chuẩn dữ liệu vào các mục hình ảnh:'}{' '}
+                        <span className="font-normal">{techEnrichStatus.summary}</span>
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {techEnrichStatus.webSources.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
+                    <span className="font-semibold text-slate-700">Nguồn đối chiếu trực tuyến:</span>
+                    {techEnrichStatus.webSources.map((src) => (
+                      <a
+                        key={src.uri}
+                        href={src.uri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[#0052B4] hover:underline truncate max-w-[240px]"
+                      >
+                        <span className="truncate">{src.title}</span>
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setTechEnrichStatus(null)}
+                className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 cursor-pointer shrink-0"
+              >
+                Ẩn thông báo
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1430,80 +1766,104 @@ export function MultiChannelPreview({
                     )}
 
                     {/* Main Preview Frame */}
-                    <div
-                      onClick={() => openGalleryModal(std.id, activeAsset?.id)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          openGalleryModal(std.id, activeAsset?.id);
-                        }
-                      }}
-                      className="relative group cursor-pointer max-w-full flex items-center justify-center"
-                      title="Nhấn để mở thư viện phóng to và tùy chỉnh nhóm"
-                    >
-                      {activeAsset?.status === 'missing-data' ? (
-                        <div className="w-[320px] max-w-full h-[230px] bg-white border border-dashed border-amber-300 rounded-lg p-5 flex flex-col items-center justify-center text-center gap-2.5">
-                          <FileWarning className="w-8 h-8 text-amber-600" />
-                          <div className="text-sm font-bold text-slate-900">
-                            Cần bổ sung tài liệu kỹ thuật
-                          </div>
-                          <p className="text-xs text-slate-600 leading-relaxed">
-                            {activeAsset.description} Hệ thống không tự vẽ sơ đồ/bản vẽ bằng AI khi chưa có dữ liệu xác thực.
-                          </p>
-                          <span className="text-xs font-semibold text-[#0052B4] group-hover:underline">
-                            Nhấn để tải bản vẽ hoặc nhập dữ liệu xác thực →
-                          </span>
+                    {activeAsset?.status === 'missing-data' ? (
+                      <div className="w-[380px] max-w-full bg-white border border-dashed border-[#0052B4]/35 rounded-xl p-5 flex flex-col items-center justify-center text-center gap-2.5 shadow-xs">
+                        <FileWarning className="w-7 h-7 text-[#0052B4]" />
+                        <div className="text-sm font-bold text-slate-900">
+                          {activeAsset.title}
                         </div>
-                      ) : activeAsset?.previewDataUrl ? (
-                        <div className="relative inline-block">
-                          <img
-                            src={activeAsset.previewDataUrl}
-                            alt={activeAsset.altText}
-                            className="block max-h-[265px] max-w-full w-auto h-auto rounded-xs shadow-md border border-slate-300/60 bg-white"
-                          />
+                        <p className="text-xs text-slate-600 leading-relaxed">
+                          Chọn 1 trong 2 phương án để AI bổ sung dữ liệu kỹ thuật chuẩn cho sản phẩm và tạo ngay hình ảnh mục này:
+                        </p>
+                        <div className="w-full flex flex-col gap-1.5 pt-1">
+                          <button
+                            type="button"
+                            disabled={isEnrichingTechDocs}
+                            onClick={() => handleEnrichOnline({ silentAuto: false })}
+                            className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0052B4] hover:bg-[#072A5E] disabled:opacity-60 rounded-lg cursor-pointer"
+                          >
+                            <Globe className={`w-3.5 h-3.5 ${isEnrichingTechDocs ? 'animate-spin' : ''}`} />
+                            <span>
+                              {isEnrichingTechDocs
+                                ? 'AI đang tra cứu trực tuyến...'
+                                : 'Ưu tiên 1: AI Tìm kiếm Trực tuyến & Bổ sung'}
+                            </span>
+                          </button>
 
-                          {/* Pure CSS Shopee Preview Overlay (Strict Separation from Export Canvas!) */}
-                          {isShopeeCover && settings.shopeePreviewOverlay && (
-                            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xs">
-                              <div className="absolute top-1.5 left-0 bg-[#EE4D2D] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-r-xs shadow-xs">
-                                Yêu thích+
-                              </div>
-                              <div className="absolute top-0 right-0 bg-[#FFD424] text-[#EE4D2D] text-[10px] font-extrabold px-1.5 py-0.5 text-center leading-tight shadow-xs">
-                                <div>15%</div>
-                                <div className="text-[8px] font-bold text-slate-900">GIẢM</div>
-                              </div>
-                              <div className="absolute bottom-0 inset-x-0 bg-gradient-to-r from-[#00BFA5] via-[#00A88F] to-[#EE4D2D] text-white text-[10px] font-bold px-2 py-1 flex items-center justify-between opacity-92">
-                                <span>FREESHIP XTRA</span>
-                                <span>VOUCHER XTRA</span>
-                              </div>
-                            </div>
-                          )}
+                          <button
+                            type="button"
+                            disabled={isEnrichingTechDocs}
+                            onClick={() => globalTechFileInputRef.current?.click()}
+                            className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0052B4] bg-[#0052B4]/8 hover:bg-[#0052B4]/15 border border-[#0052B4]/25 disabled:opacity-60 rounded-lg cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            <span>Phương án 2: Up file sản phẩm để AI phân tích</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        onClick={() => openGalleryModal(std.id, activeAsset?.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            openGalleryModal(std.id, activeAsset?.id);
+                          }
+                        }}
+                        className="relative group cursor-pointer max-w-full flex items-center justify-center"
+                        title="Nhấn để mở thư viện phóng to và tùy chỉnh nhóm"
+                      >
+                        {activeAsset?.previewDataUrl ? (
+                          <div className="relative inline-block">
+                            <img
+                              src={activeAsset.previewDataUrl}
+                              alt={activeAsset.altText}
+                              className="block max-h-[265px] max-w-full w-auto h-auto rounded-xs shadow-md border border-slate-300/60 bg-white"
+                            />
 
-                          {activeAsset.approved && (
-                            <div className="absolute top-2 left-2 bg-emerald-700/92 text-white text-[10px] font-semibold px-2 py-0.5 rounded-xs inline-flex items-center gap-1 shadow-xs">
-                              <Lock className="w-3 h-3" />
-                              <span>Đã duyệt</span>
+                            {/* Pure CSS Shopee Preview Overlay (Strict Separation from Export Canvas!) */}
+                            {isShopeeCover && settings.shopeePreviewOverlay && (
+                              <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-xs">
+                                <div className="absolute top-1.5 left-0 bg-[#EE4D2D] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-r-xs shadow-xs">
+                                  Yêu thích+
+                                </div>
+                                <div className="absolute top-0 right-0 bg-[#FFD424] text-[#EE4D2D] text-[10px] font-extrabold px-1.5 py-0.5 text-center leading-tight shadow-xs">
+                                  <div>15%</div>
+                                  <div className="text-[8px] font-bold text-slate-900">GIẢM</div>
+                                </div>
+                                <div className="absolute bottom-0 inset-x-0 bg-gradient-to-r from-[#00BFA5] via-[#00A88F] to-[#EE4D2D] text-white text-[10px] font-bold px-2 py-1 flex items-center justify-between opacity-92">
+                                  <span>FREESHIP XTRA</span>
+                                  <span>VOUCHER XTRA</span>
+                                </div>
+                              </div>
+                            )}
+
+                            {activeAsset.approved && (
+                              <div className="absolute top-2 left-2 bg-emerald-700/92 text-white text-[10px] font-semibold px-2 py-0.5 rounded-xs inline-flex items-center gap-1 shadow-xs">
+                                <Lock className="w-3 h-3" />
+                                <span>Đã duyệt</span>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="w-[260px] h-[220px] bg-white border border-slate-200 rounded-lg flex flex-col items-center justify-center text-center p-4 gap-2">
+                            <Layers className="w-7 h-7 text-slate-400" />
+                            <div className="text-xs font-semibold text-slate-700">
+                              {activeAsset?.status === 'generating'
+                                ? 'Đang kết xuất ảnh...'
+                                : activeAsset?.status === 'error'
+                                ? 'Kết xuất lỗi — nhấn Tạo lại'
+                                : 'Chưa tạo bản xem trước cho ảnh này'}
                             </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="w-[260px] h-[220px] bg-white border border-slate-200 rounded-lg flex flex-col items-center justify-center text-center p-4 gap-2">
-                          <Layers className="w-7 h-7 text-slate-400" />
-                          <div className="text-xs font-semibold text-slate-700">
-                            {activeAsset?.status === 'generating'
-                              ? 'Đang kết xuất ảnh...'
-                              : activeAsset?.status === 'error'
-                              ? 'Kết xuất lỗi — nhấn Tạo lại'
-                              : 'Chưa tạo bản xem trước cho ảnh này'}
+                            <div className="text-[11px] text-slate-500">
+                              Nhấn &quot;Tạo trọn bộ&quot; hoặc &quot;Tạo lại ảnh chọn&quot; bên dưới.
+                            </div>
                           </div>
-                          <div className="text-[11px] text-slate-500">
-                            Nhấn &quot;Tạo trọn bộ&quot; hoặc &quot;Tạo lại ảnh chọn&quot; bên dưới.
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Selected Slide Caption */}
                     {activeAsset && (
@@ -1687,6 +2047,10 @@ export function MultiChannelPreview({
             setGalleryState((prev) => ({ ...prev, open: false }));
             openExportModal('group', [groupId]);
           }}
+          onEnrichOnline={() => handleEnrichOnline({ silentAuto: false })}
+          onEnrichFromFile={handleEnrichFromFile}
+          isEnrichingTechDocs={isEnrichingTechDocs}
+          techEnrichSummary={techEnrichStatus?.summary ?? null}
         />
       )}
 

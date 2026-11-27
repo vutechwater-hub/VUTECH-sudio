@@ -279,6 +279,220 @@ Trả về JSON tiếng Việt chuẩn thương mại:
     }
   });
 
+  // Enrich multi-channel technical documentation slides:
+  // - mode 'online-search' (Priority 1): Uses Google Search grounding to proactively look up and standardize technical specs, dimensions, structure & schematics for the product.
+  // - mode 'file-upload' (Method 2): Parses an uploaded product file (PDF, image, TXT, CSV, JSON) + optional notes with AI and maps standardized data to each required image slide.
+  app.post('/api/gemini/enrich-technical-docs', async (req, res) => {
+    try {
+      const {
+        mode = 'online-search',
+        productName = '',
+        modelCode = '',
+        category = '',
+        specs = [],
+        productImageBase64,
+        productImageMimeType,
+        uploadedFileBase64,
+        uploadedFileMimeType,
+        uploadedFileName,
+        uploadedTextContent,
+      } = req.body as {
+        mode?: 'online-search' | 'file-upload';
+        productName?: string;
+        modelCode?: string;
+        category?: string;
+        specs?: string[];
+        productImageBase64?: string;
+        productImageMimeType?: string;
+        uploadedFileBase64?: string;
+        uploadedFileMimeType?: string;
+        uploadedFileName?: string;
+        uploadedTextContent?: string;
+      };
+
+      const ai = getAiClient();
+      const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
+
+      // Attach product photo if available so AI visually grounds ports, stages, gauges, and housing
+      if (productImageBase64 && typeof productImageBase64 === 'string') {
+        const cleanImg = productImageBase64.includes(',')
+          ? productImageBase64.split(',')[1]
+          : productImageBase64;
+        const safeMime =
+          productImageMimeType && productImageMimeType.startsWith('image/')
+            ? productImageMimeType
+            : 'image/jpeg';
+        parts.push({
+          inlineData: {
+            data: cleanImg,
+            mimeType: safeMime,
+          },
+        });
+      }
+
+      // If Method 2 (file-upload), attach the uploaded binary document (PDF or image)
+      if (mode === 'file-upload' && uploadedFileBase64 && typeof uploadedFileBase64 === 'string') {
+        const cleanDoc = uploadedFileBase64.includes(',')
+          ? uploadedFileBase64.split(',')[1]
+          : uploadedFileBase64;
+        const docMime =
+          uploadedFileMimeType &&
+          (uploadedFileMimeType.startsWith('image/') ||
+            uploadedFileMimeType === 'application/pdf' ||
+            uploadedFileMimeType.startsWith('text/'))
+            ? uploadedFileMimeType
+            : 'application/pdf';
+        parts.push({
+          inlineData: {
+            data: cleanDoc,
+            mimeType: docMime,
+          },
+        });
+      }
+
+      const contextSummary = [
+        `Tên sản phẩm: ${productName || 'Thiết bị xử lý nước VUTECH'}`,
+        `Mã Model: ${modelCode || 'VUTECH'}`,
+        `Chủng loại: ${category || 'Thiết bị & vật tư xử lý nước'}`,
+        `Thông số hiện tại: ${Array.isArray(specs) ? specs.filter(Boolean).join(' | ') : ''}`,
+        uploadedFileName ? `Tên file tài liệu tải lên: ${uploadedFileName}` : '',
+        uploadedTextContent ? `Nội dung văn bản tài liệu tải lên:\n${uploadedTextContent.slice(0, 12000)}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const prompt =
+        mode === 'online-search'
+          ? `Bạn là Kỹ sư Trưởng ngành xử lý nước & thiết bị lọc nước của CÔNG TY TNHH XNK VUTECH.
+Nhiệm vụ (Ưu tiên 1 - Tra cứu trực tuyến chủ động):
+Hãy tìm kiếm thông tin kỹ thuật trực tuyến và kết hợp quan sát hình ảnh sản phẩm để chuẩn hóa bộ dữ liệu kỹ thuật đầy đủ, chính xác theo tiêu chuẩn ngành xử lý nước cho sản phẩm sau:
+${contextSummary}
+
+Yêu cầu bắt buộc:
+1. Giữ chuẩn xác các đơn vị kỹ thuật ngành nước: L/h, m³/h, GPD, PSI, MPa, bar, mm, DN, inch, µm, µS/cm, V/Hz, kW.
+2. Phân bổ dữ liệu chuyên biệt để đẩy trực tiếp vào từng mục hình ảnh của Bộ Quy Chuẩn Đa Kênh:
+   - Chuẩn Shopee (Nhóm 02): Ngắn gọn, súc tích, dễ đọc trên điện thoại, TUYỆT ĐỐI KHÔNG chứa số điện thoại, website, email hoặc link ngoài sàn.
+   - Chuẩn Website (Nhóm 03): Chuẩn hóa thông số kích thước, vật liệu và ứng dụng thực tế rõ ràng.
+   - Chuẩn Kỹ thuật Công nghiệp (Nhóm 05): Đầy đủ thông số chuyên sâu, kích thước bản vẽ (Cao × Rộng × Sâu, cỡ ống kết nối DN/mm), cấu tạo cắt lớp từng tầng/vật liệu, sơ đồ nguyên lý dòng chảy (các bước xử lý nối tiếp nhau), và điều kiện vận hành/tiêu chuẩn chất lượng nước (예: QCVN 6-1:2010/BYT, QCVN 01-1:2018/BYT, ISO 9001:2015).
+
+Hãy trả về DUY NHẤT một đối tượng JSON hợp lệ (không thêm giải thích ngoài JSON) theo cấu trúc sau:
+{
+  "standardizedProductName": "Tên sản phẩm chuẩn hóa (nếu cần tinh chỉnh)",
+  "standardizedModelCode": "Mã model chuẩn",
+  "coreSpecs": ["Thông số chính 1 (<28 ký tự)", "Thông số chính 2 (<28 ký tự)", "Thông số chính 3 (<28 ký tự)"],
+  "sourceSummary": "Tóm tắt ngắn nguồn tiêu chuẩn kỹ thuật đã đối chiếu trực tuyến",
+  "slides": {
+    "sp-sub-02-spec-table": "3-4 dòng thông số bảng Shopee (mỗi dòng 1 thông số, không có SĐT/Web)",
+    "sp-sub-03-dimensions": "3 dòng kích thước lắp đặt chuẩn Shopee: Kích thước tổng thể (D×R×C mm), Đường ống kết nối (DN/mm), Không gian lắp đặt khuyến nghị (không có SĐT/Web)",
+    "sp-sub-04-materials": "3 dòng cấu tạo & vật liệu chế tạo chính (Inox 304/Composite FRP/Màng RO...)",
+    "sp-sub-08-packaging-cert": "3 dòng quy cách đóng gói, phụ kiện đi kèm & tiêu chuẩn kiểm định chất lượng nước (không có SĐT/Web)",
+    "web-05-specs-size": "3 dòng thông số & kích thước chuẩn hiển thị trên Website",
+    "tech-02-deep-specs": "5-6 dòng thông số kỹ thuật chuyên sâu kèm đơn vị chuẩn (Công suất, Áp suất làm việc MPa/bar, Cỡ ống DN, Vật liệu, Điện áp/Công suất, Độ tinh lọc µm/TDS)",
+    "tech-03-drawing": "5 dòng bản vẽ kích thước kỹ thuật: Kích thước phủ bì H×W×D (mm), Cổng nước cấp vào (DN/mm), Cổng nước thành phẩm (DN/mm), Cổng xả thải/xả rửa (DN/mm), Trọng lượng vận hành (kg)",
+    "tech-04-cutaway": "5 dòng mô hình cắt lớp & cấu tạo bên trong theo thứ tự từ ngoài vào trong hoặc từ trên xuống dưới (Lớp 1, Lớp 2, Lớp 3, Cụm van/điều khiển, Đế/Khung chịu lực)",
+    "tech-05-schematic": "5 dòng sơ đồ nguyên lý hoạt động & kết nối theo luồng: Bước 1 (Nguồn cấp) -> Bước 2 (Tiền xử lý/Lọc thô) -> Bước 3 (Cụm lọc chính/Màng) -> Bước 4 (Hoàn nguyên/Xả rửa) -> Bước 5 (Nước thành phẩm đạt chuẩn)",
+    "tech-06-operating": "5 dòng điều kiện vận hành (Áp lực nước cấp, Nhiệt độ làm việc, Nguồn nước đầu vào, Chu kỳ bảo trì/súc rửa, Phạm vi ứng dụng công trình)"
+  }
+}`
+          : `Bạn là Kỹ sư Trưởng ngành xử lý nước & thiết bị lọc nước của CÔNG TY TNHH XNK VUTECH.
+Nhiệm vụ (Phương án 2 - Phân tích file tài liệu sản phẩm tải lên):
+Hãy phân tích kỹ toàn bộ thông tin trong file/tài liệu người dùng vừa tải lên kết hợp với thông tin sản phẩm hiện tại:
+${contextSummary}
+
+Yêu cầu bắt buộc:
+1. Trích xuất và chuẩn hóa chính xác dữ liệu từ tài liệu tải lên, giữ nguyên các đơn vị kỹ thuật ngành nước (L/h, m³/h, GPD, PSI, MPa, bar, mm, DN, µm, µS/cm).
+2. Phân bổ đúng thông tin đã trích xuất vào từng mục hình ảnh để phục vụ yêu cầu riêng của từng quy chuẩn:
+   - Nhóm 02 (Shopee): Không chứa SĐT/Website/Email/Link ngoài sàn, trình bày 3 dòng rõ ràng trên mỗi ảnh.
+   - Nhóm 03 (Website): Tóm tắt kích thước & thông số thương mại rõ nét.
+   - Nhóm 05 (Kỹ thuật Công nghiệp): Đầy đủ 5-6 dòng chi tiết cho Bảng thông số chuyên sâu, Bản vẽ kích thước (H×W×D mm, cổng DN), Cấu tạo cắt lớp, Sơ đồ nguyên lý kết nối và Điều kiện vận hành.
+
+Hãy trả về DUY NHẤT một đối tượng JSON hợp lệ (không thêm văn bản ngoài JSON) theo cấu trúc sau:
+{
+  "standardizedProductName": "Tên sản phẩm trích xuất từ tài liệu",
+  "standardizedModelCode": "Mã model trích xuất từ tài liệu",
+  "coreSpecs": ["Thông số chính 1 (<28 ký tự)", "Thông số chính 2 (<28 ký tự)", "Thông số chính 3 (<28 ký tự)"],
+  "sourceSummary": "Tóm tắt dữ liệu đã trích xuất từ file tài liệu tải lên",
+  "slides": {
+    "sp-sub-02-spec-table": "3-4 dòng thông số bảng Shopee (mỗi dòng 1 thông số, không có SĐT/Web)",
+    "sp-sub-03-dimensions": "3 dòng kích thước & quy cách lắp đặt chuẩn Shopee (không có SĐT/Web)",
+    "sp-sub-04-materials": "3 dòng cấu tạo & vật liệu chế tạo chính",
+    "sp-sub-08-packaging-cert": "3 dòng quy cách đóng gói & tiêu chuẩn chất lượng/chứng nhận (không có SĐT/Web)",
+    "web-05-specs-size": "3 dòng thông số & kích thước chuẩn Website",
+    "tech-02-deep-specs": "5-6 dòng thông số kỹ thuật chuyên sâu kèm đơn vị chuẩn",
+    "tech-03-drawing": "5 dòng thông số bản vẽ kích thước kỹ thuật (H×W×D mm, các cổng DN/mm, trọng lượng)",
+    "tech-04-cutaway": "5 dòng cấu tạo cắt lớp & chi tiết linh kiện bên trong",
+    "tech-05-schematic": "5 dòng sơ đồ nguyên lý hoạt động & luồng kết nối đường ống",
+    "tech-06-operating": "5 dòng điều kiện vận hành & phạm vi ứng dụng"
+  }
+}`;
+
+      parts.push({ text: prompt });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: { parts },
+        config:
+          mode === 'online-search'
+            ? {
+                tools: [{ googleSearch: {} }],
+              }
+            : {
+                responseMimeType: 'application/json',
+              },
+      });
+
+      const rawText = (response.text ?? '').trim();
+      const firstBrace = rawText.indexOf('{');
+      const lastBrace = rawText.lastIndexOf('}');
+      if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+        throw new Error('Mô hình AI không trả về đúng định dạng dữ liệu kỹ thuật JSON.');
+      }
+
+      const jsonStr = rawText.slice(firstBrace, lastBrace + 1);
+      const parsed = JSON.parse(jsonStr) as {
+        standardizedProductName?: string;
+        standardizedModelCode?: string;
+        coreSpecs?: string[];
+        sourceSummary?: string;
+        slides?: Record<string, string>;
+      };
+
+      // Extract web grounding sources if Google Search was used
+      const groundingChunks =
+        response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+      const webSources: Array<{ title: string; uri: string }> = [];
+      for (const chunk of groundingChunks) {
+        const uri = chunk?.web?.uri;
+        const title = chunk?.web?.title;
+        if (uri && !webSources.some((s) => s.uri === uri)) {
+          webSources.push({
+            title: title || uri,
+            uri,
+          });
+        }
+      }
+
+      res.json({
+        enrichment: {
+          mode,
+          standardizedProductName: parsed.standardizedProductName || productName,
+          standardizedModelCode: parsed.standardizedModelCode || modelCode,
+          coreSpecs: Array.isArray(parsed.coreSpecs) ? parsed.coreSpecs.slice(0, 3) : [],
+          sourceSummary:
+            parsed.sourceSummary ||
+            (mode === 'online-search'
+              ? 'Đã tra cứu trực tuyến và chuẩn hóa theo tiêu chuẩn thiết bị xử lý nước VUTECH.'
+              : `Đã phân tích và trích xuất chuẩn dữ liệu từ tài liệu ${uploadedFileName || 'tải lên'}.`),
+          slides: parsed.slides ?? {},
+          webSources: webSources.slice(0, 5),
+        },
+      });
+    } catch (err) {
+      const formatted = formatGeminiError(err);
+      res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
+    }
+  });
+
   // Serve Vite middleware in development or static dist in production
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');

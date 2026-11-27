@@ -19,6 +19,9 @@ import {
   ZoomOut,
   Plus,
   Trash2,
+  Globe,
+  FileText,
+  Sparkles,
 } from 'lucide-react';
 import { FACEBOOK_RATIO_PRESETS } from '../constants/platformRegistry';
 import type {
@@ -51,6 +54,10 @@ interface GroupGalleryModalProps {
   onRemoveWatermarkAsset: (assetId: string) => void;
   onOpenExportForAsset: (groupId: DesignGroupId, assetId: string) => void;
   onOpenExportForGroup: (groupId: DesignGroupId) => void;
+  onEnrichOnline?: () => Promise<void>;
+  onEnrichFromFile?: (file: File, targetAssetId?: string) => Promise<void>;
+  isEnrichingTechDocs?: boolean;
+  techEnrichSummary?: string | null;
 }
 
 function StatusLabel({ status }: { status: ValidationStatus }) {
@@ -102,6 +109,10 @@ export function GroupGalleryModal({
   onRemoveWatermarkAsset,
   onOpenExportForAsset,
   onOpenExportForGroup,
+  onEnrichOnline,
+  onEnrichFromFile,
+  isEnrichingTechDocs = false,
+  techEnrichSummary,
 }: GroupGalleryModalProps) {
   const [selectedId, setSelectedId] = useState<string>(initialAssetId || assets[0]?.id || '');
   const [zoomPct, setZoomPct] = useState(100);
@@ -110,6 +121,7 @@ export function GroupGalleryModal({
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
 
   const customImgInputRef = useRef<HTMLInputElement | null>(null);
+  const techDocFileInputRef = useRef<HTMLInputElement | null>(null);
   const wmBatchInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!open || !standard || !settings) return null;
@@ -396,33 +408,66 @@ export function GroupGalleryModal({
                   )}
                 </div>
               ) : (
-                <div className="max-w-md text-center bg-white border border-slate-200 rounded-xl p-6 space-y-3 shadow-xs">
-                  <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
+                <div className="max-w-lg text-center bg-white border border-slate-200 rounded-xl p-6 space-y-4 shadow-xs">
+                  <Sparkles className="w-8 h-8 text-[#0052B4] mx-auto" />
                   <h3 className="text-sm font-bold text-slate-900">
                     {activeAsset.status === 'missing-data'
-                      ? 'Cần bổ sung tài liệu kỹ thuật xác thực'
+                      ? 'Bổ sung tài liệu kỹ thuật thông minh cho sản phẩm'
                       : 'Chưa kết xuất ảnh cho vị trí này'}
                   </h3>
                   <p className="text-xs text-slate-600 leading-relaxed">
                     {activeAsset.status === 'missing-data'
-                      ? 'Hệ thống không tự bịa bản vẽ kích thước, sơ đồ cấu tạo hay chứng nhận bằng AI. Vui lòng tải ảnh tài liệu thật hoặc nhập thông số kỹ thuật đã xác thực ở cột bên phải.'
+                      ? 'Ưu tiên 1: Để AI chủ động tra cứu trực tuyến và bổ sung đầy đủ thông số, bản vẽ kích thước, cấu tạo cắt lớp & sơ đồ theo chuẩn sản phẩm. Phương án 2: Tải file thông tin sản phẩm (PDF, Ảnh catalog/tem/bản vẽ, TXT, CSV) để AI phân tích và đẩy đúng dữ liệu vào từng mục hình ảnh.'
                       : activeAsset.description}
                   </p>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setRegeneratingId(activeAsset.id);
-                      try {
-                        await onRegenerateAsset(standard.id, activeAsset.id);
-                      } finally {
-                        setRegeneratingId(null);
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0052B4] hover:bg-[#072A5E] rounded-lg cursor-pointer"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Tạo ảnh ngay</span>
-                  </button>
+
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 pt-1">
+                    {onEnrichOnline && (
+                      <button
+                        type="button"
+                        disabled={isEnrichingTechDocs}
+                        onClick={() => onEnrichOnline()}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#0052B4] hover:bg-[#072A5E] disabled:opacity-60 rounded-lg cursor-pointer"
+                      >
+                        <Globe className={`w-3.5 h-3.5 ${isEnrichingTechDocs ? 'animate-spin' : ''}`} />
+                        <span>
+                          {isEnrichingTechDocs
+                            ? 'AI đang tra cứu & chuẩn hóa...'
+                            : 'Ưu tiên 1: AI Tra cứu Trực tuyến'}
+                        </span>
+                      </button>
+                    )}
+
+                    {onEnrichFromFile && (
+                      <button
+                        type="button"
+                        disabled={isEnrichingTechDocs}
+                        onClick={() => techDocFileInputRef.current?.click()}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#0052B4] bg-[#0052B4]/8 hover:bg-[#0052B4]/15 border border-[#0052B4]/25 disabled:opacity-60 rounded-lg cursor-pointer"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Phương án 2: Up file để AI phân tích</span>
+                      </button>
+                    )}
+
+                    {activeAsset.status !== 'missing-data' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setRegeneratingId(activeAsset.id);
+                          try {
+                            await onRegenerateAsset(standard.id, activeAsset.id);
+                          } finally {
+                            setRegeneratingId(null);
+                          }
+                        }}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Tạo ảnh ngay</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -746,6 +791,69 @@ export function GroupGalleryModal({
 
               <p className="text-xs font-semibold text-slate-900">{activeAsset.title}</p>
 
+              {/* AI Technical Documentation Enrichment Box (Priority 1 Online + Method 2 File Upload) */}
+              {(onEnrichOnline || onEnrichFromFile) && (
+                <div className="p-3 rounded-lg bg-[#0052B4]/5 border border-[#0052B4]/20 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-[#072A5E] flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5 text-[#0052B4]" />
+                      <span>Bổ sung Tài liệu Kỹ thuật bằng AI</span>
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-1.5">
+                    {onEnrichOnline && (
+                      <button
+                        type="button"
+                        disabled={isEnrichingTechDocs}
+                        onClick={() => onEnrichOnline()}
+                        className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-white bg-[#0052B4] hover:bg-[#072A5E] disabled:opacity-60 rounded-md cursor-pointer"
+                      >
+                        <Globe className={`w-3.5 h-3.5 ${isEnrichingTechDocs ? 'animate-spin' : ''}`} />
+                        <span>
+                          {isEnrichingTechDocs
+                            ? 'Đang tra cứu & đồng bộ dữ liệu...'
+                            : '1. AI Tra cứu Trực tuyến (Ưu tiên)'}
+                        </span>
+                      </button>
+                    )}
+
+                    {onEnrichFromFile && (
+                      <>
+                        <input
+                          ref={techDocFileInputRef}
+                          type="file"
+                          accept=".pdf,.txt,.csv,.json,.md,image/*,application/pdf"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              onEnrichFromFile(file, activeAsset.id);
+                            }
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                        />
+                        <button
+                          type="button"
+                          disabled={isEnrichingTechDocs}
+                          onClick={() => techDocFileInputRef.current?.click()}
+                          className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-[#0052B4] bg-white hover:bg-slate-50 border border-[#0052B4]/30 disabled:opacity-60 rounded-md cursor-pointer"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          <span>2. Up file sản phẩm (PDF/Ảnh/TXT) để AI phân tích</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  {techEnrichSummary && (
+                    <p className="text-[11px] text-emerald-800 bg-emerald-50/90 border border-emerald-200 rounded px-2 py-1 leading-snug">
+                      {techEnrichSummary}
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <input
                   ref={customImgInputRef}
@@ -757,23 +865,23 @@ export function GroupGalleryModal({
                 <button
                   type="button"
                   onClick={() => customImgInputRef.current?.click()}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0052B4] bg-[#0052B4]/8 hover:bg-[#0052B4]/14 rounded-lg cursor-pointer"
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <span>
                     {activeAsset.customSourceName
                       ? `Thay ảnh (${activeAsset.customSourceName.slice(0, 16)})`
-                      : 'Nạp ảnh góc chụp / bản vẽ thật'}
+                      : 'Thay ảnh góc chụp / bản vẽ riêng cho mục này'}
                   </span>
                 </button>
               </div>
 
               <div className="space-y-1">
                 <label className="block text-xs font-semibold text-slate-700">
-                  Thông số kỹ thuật / Kích thước / Chứng nhận xác thực
+                  Thông số kỹ thuật / Kích thước / Chứng nhận (AI đã chuẩn hóa hoặc tự sửa)
                 </label>
                 <textarea
-                  rows={3}
+                  rows={4}
                   value={activeAsset.customTechnicalNotes ?? ''}
                   onChange={(e) =>
                     onUpdateAsset(standard.id, activeAsset.id, {

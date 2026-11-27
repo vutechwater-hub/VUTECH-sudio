@@ -821,7 +821,11 @@ export async function renderGroupSlideCanvas(
       ctx.fillText(wrapLines(ctx, safeName, width - pad * 2, 1)[0] ?? safeName, pad, y);
       y += Math.round(42 * u);
 
-      const cols = validSpecs.slice(0, 3);
+      const webNoteCols = (asset.customTechnicalNotes ?? '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const cols = (webNoteCols.length > 0 ? webNoteCols : validSpecs).slice(0, 3);
       if (cols.length > 0) {
         const colW = (width - pad * 2) / cols.length;
         cols.forEach((sp, i) => {
@@ -1098,15 +1102,121 @@ export async function renderGroupSlideCanvas(
     ctx.restore();
 
     if (productImg) {
+      const innerPad = asset.slotIndex >= 3 && asset.slotIndex <= 5 && !asset.customSourceUrl ? Math.round(44 * u) : Math.round(14 * u);
       drawProductInStage({
         ctx,
         img: productImg,
-        stage: { x: stage.x + Math.round(14 * u), y: stage.y + Math.round(14 * u), w: stage.w - Math.round(28 * u), h: stage.h - Math.round(28 * u) },
+        stage: {
+          x: stage.x + innerPad,
+          y: stage.y + innerPad,
+          w: stage.w - innerPad * 2,
+          h: stage.h - innerPad * (asset.slotIndex === 5 && !asset.customSourceUrl ? 2.6 : 2),
+        },
         studioConfig,
         u,
         cleanWhiteMode: true,
-        targetOccupancy: 0.9,
+        targetOccupancy: 0.88,
       });
+
+      // Draw authentic CAD engineering annotations when AI or file upload provides technical data without a separate CAD image
+      if (!asset.customSourceUrl && (asset.customTechnicalNotes ?? '').trim().length > 0) {
+        ctx.save();
+        if (asset.slotIndex === 3) {
+          // 03. Technical Dimension CAD Guides (H x W & Port markers)
+          const leftDimX = stage.x + Math.round(26 * u);
+          const topY = stage.y + Math.round(38 * u);
+          const botY = stage.y + stage.h - Math.round(52 * u);
+          ctx.strokeStyle = '#0052B4';
+          ctx.lineWidth = Math.max(1.5, 2 * u);
+          ctx.beginPath();
+          ctx.moveTo(leftDimX, topY);
+          ctx.lineTo(leftDimX, botY);
+          ctx.moveTo(leftDimX - Math.round(8 * u), topY);
+          ctx.lineTo(leftDimX + Math.round(8 * u), topY);
+          ctx.moveTo(leftDimX - Math.round(8 * u), botY);
+          ctx.lineTo(leftDimX + Math.round(8 * u), botY);
+          ctx.stroke();
+
+          // Horizontal Width Guide
+          const leftX = stage.x + Math.round(48 * u);
+          const rightX = stage.x + stage.w - Math.round(36 * u);
+          const hDimY = stage.y + stage.h - Math.round(26 * u);
+          ctx.beginPath();
+          ctx.moveTo(leftX, hDimY);
+          ctx.lineTo(rightX, hDimY);
+          ctx.moveTo(leftX, hDimY - Math.round(8 * u));
+          ctx.lineTo(leftX, hDimY + Math.round(8 * u));
+          ctx.moveTo(rightX, hDimY - Math.round(8 * u));
+          ctx.lineTo(rightX, hDimY + Math.round(8 * u));
+          ctx.stroke();
+
+          ctx.fillStyle = '#072A5E';
+          ctx.font = `700 ${Math.round(15 * u)}px "JetBrains Mono", monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText('W / CHIỀU RỘNG PHỦ BÌ (mm)', (leftX + rightX) / 2, hDimY - Math.round(4 * u));
+
+          // Top right CAD stamp
+          const stampW = Math.round(168 * u);
+          const stampH = Math.round(34 * u);
+          drawRoundedRect(ctx, stage.x + stage.w - stampW - Math.round(14 * u), stage.y + Math.round(14 * u), stampW, stampH, Math.round(6 * u));
+          ctx.fillStyle = '#072A5E';
+          ctx.fill();
+          ctx.fillStyle = '#7DD3FC';
+          ctx.font = `700 ${Math.round(14 * u)}px "JetBrains Mono", monospace`;
+          ctx.textBaseline = 'middle';
+          ctx.fillText('CAD DIM · ĐƠN VỊ: MM', stage.x + stage.w - stampW / 2 - Math.round(14 * u), stage.y + Math.round(14 * u) + stampH / 2);
+        } else if (asset.slotIndex === 4) {
+          // 04. Cutaway Structural Callout Nodes [01]..[04]
+          const points = [
+            { num: '01', x: stage.x + stage.w * 0.28, y: stage.y + stage.h * 0.22 },
+            { num: '02', x: stage.x + stage.w * 0.72, y: stage.y + stage.h * 0.36 },
+            { num: '03', x: stage.x + stage.w * 0.30, y: stage.y + stage.h * 0.56 },
+            { num: '04', x: stage.x + stage.w * 0.70, y: stage.y + stage.h * 0.74 },
+          ];
+          points.forEach((pt) => {
+            const cx = pt.x > stage.x + stage.w / 2 ? stage.x + stage.w * 0.54 : stage.x + stage.w * 0.46;
+            ctx.strokeStyle = '#0052B4';
+            ctx.lineWidth = Math.max(1.5, 2 * u);
+            ctx.beginPath();
+            ctx.moveTo(cx, pt.y);
+            ctx.lineTo(pt.x, pt.y);
+            ctx.stroke();
+
+            const r = Math.round(17 * u);
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#072A5E';
+            ctx.fill();
+            ctx.strokeStyle = '#38BDF8';
+            ctx.stroke();
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `700 ${Math.round(14 * u)}px "JetBrains Mono", monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(pt.num, pt.x, pt.y);
+          });
+        } else if (asset.slotIndex === 5) {
+          // 05. P&ID Flow Process Strip at bottom of stage
+          const stripH = Math.round(58 * u);
+          const stripY = stage.y + stage.h - stripH - Math.round(12 * u);
+          const steps = ['01. NGUỒN CẤP', '02. TIỀN XỬ LÝ', '03. CỤM LỌC CHÍNH', '04. NƯỚC ĐẠT CHUẨN'];
+          const boxW = Math.round((stage.w - Math.round(56 * u)) / steps.length);
+          steps.forEach((st, idx) => {
+            const bx = stage.x + Math.round(20 * u) + idx * (boxW + Math.round(6 * u));
+            drawRoundedRect(ctx, bx, stripY, boxW - Math.round(8 * u), stripH, Math.round(8 * u));
+            ctx.fillStyle = idx === steps.length - 1 ? '#0052B4' : '#072A5E';
+            ctx.fill();
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `700 ${Math.round(13 * u)}px "JetBrains Mono", monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(st, bx + (boxW - Math.round(8 * u)) / 2, stripY + stripH / 2);
+          });
+        }
+        ctx.restore();
+      }
     }
 
     // Left engineering specifications panel

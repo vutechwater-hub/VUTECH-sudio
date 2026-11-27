@@ -688,6 +688,7 @@ export default function App() {
           activeItemId={activeItem.id}
           onSelectBatchItem={setActiveItemId}
           exportFormat={exportFormat}
+          onUpdateConfig={updateConfig}
           onOpenInEditor={(patch) => {
             updateConfig(patch);
             setActiveTab('studio');
