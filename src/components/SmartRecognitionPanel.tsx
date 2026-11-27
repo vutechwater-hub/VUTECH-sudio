@@ -530,7 +530,8 @@ export function SmartRecognitionPanel({
             }
             className="px-2 py-1 rounded border border-slate-300 bg-white text-[11px] font-bold text-[#072A5E] focus:outline-none focus:border-[#0052B4]"
           >
-            <option value="gemini-4-hydrogen">gemini-4-hydrogen (Đa phương thức chuẩn)</option>
+            <option value="gemini-4-hydrogen">gemini-4-hydrogen (AI Studio / Tự động Fallback)</option>
+            <option value="gemini-2.5-flash">gemini-2.5-flash (Chuẩn Cloudflare Workers / API Key ngoài)</option>
             <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Tốc độ cao / Tiết kiệm Quota)</option>
           </select>
         </div>

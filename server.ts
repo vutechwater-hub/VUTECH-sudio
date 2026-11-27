@@ -15,7 +15,19 @@ const ALLOWED_IMAGE_MODELS = new Set([
 const ALLOWED_RECOGNITION_MODELS = new Set([
   'gemini-4-hydrogen',
   'gemini-3.1-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-3.1-flash-lite-preview',
 ]);
+
+function getRecognitionFallbackOrder(requestedModel?: string): string[] {
+  if (requestedModel === 'gemini-3.1-flash-lite') {
+    return ['gemini-3.1-flash-lite', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-flash', 'gemini-4-hydrogen'];
+  }
+  if (requestedModel === 'gemini-2.5-flash') {
+    return ['gemini-2.5-flash', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite-preview'];
+  }
+  return ['gemini-4-hydrogen', 'gemini-2.5-flash', 'gemini-3.1-flash-lite-preview'];
+}
 
 const ALLOWED_ASPECT_RATIOS = new Set([
   '1:1',
@@ -312,102 +324,125 @@ QUY TẮC BẮT BUỘC (TUYỆT ĐỐI TUÂN THỦ):
 
       parts.push({ text: promptText });
 
-      const response = await ai.models.generateContent({
-        model: selectedModel,
-        contents: { parts },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              productName: { type: Type.STRING },
-              shortName: { type: Type.STRING },
-              brand: { type: Type.STRING },
-              manufacturer: { type: Type.STRING },
-              model: { type: Type.STRING },
-              rawModel: { type: Type.STRING },
-              sku: { type: Type.STRING },
-              categoryId: { type: Type.STRING },
-              category: { type: Type.STRING },
-              subCategory: { type: Type.STRING },
-              material: { type: Type.STRING },
-              origin: { type: Type.STRING },
-              packaging: { type: Type.STRING },
-              applications: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              visibleText: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              technicalSpecifications: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING },
-                    value: { type: Type.STRING },
-                    unit: { type: Type.STRING },
-                    source: { type: Type.STRING },
-                    confidence: { type: Type.NUMBER },
-                    verified: { type: Type.BOOLEAN },
+      const fallbackCandidates = getRecognitionFallbackOrder(selectedModel);
+      let responseText = '{}';
+      let usedModelName = selectedModel;
+      let lastErr: unknown = null;
+
+      for (const candidateModel of fallbackCandidates) {
+        try {
+          const response = await ai.models.generateContent({
+            model: candidateModel,
+            contents: { parts },
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  productName: { type: Type.STRING },
+                  shortName: { type: Type.STRING },
+                  brand: { type: Type.STRING },
+                  manufacturer: { type: Type.STRING },
+                  model: { type: Type.STRING },
+                  rawModel: { type: Type.STRING },
+                  sku: { type: Type.STRING },
+                  categoryId: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  subCategory: { type: Type.STRING },
+                  material: { type: Type.STRING },
+                  origin: { type: Type.STRING },
+                  packaging: { type: Type.STRING },
+                  applications: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
                   },
-                  required: ['name', 'value', 'source', 'confidence', 'verified'],
+                  visibleText: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                  technicalSpecifications: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        name: { type: Type.STRING },
+                        value: { type: Type.STRING },
+                        unit: { type: Type.STRING },
+                        source: { type: Type.STRING },
+                        confidence: { type: Type.NUMBER },
+                        verified: { type: Type.BOOLEAN },
+                      },
+                      required: ['name', 'value', 'source', 'confidence', 'verified'],
+                    },
+                  },
+                  confidence: { type: Type.NUMBER },
+                  fieldConfidence: {
+                    type: Type.OBJECT,
+                    properties: {
+                      brand: { type: Type.NUMBER },
+                      model: { type: Type.NUMBER },
+                      category: { type: Type.NUMBER },
+                      productName: { type: Type.NUMBER },
+                      specifications: { type: Type.NUMBER },
+                    },
+                    required: ['brand', 'model', 'category', 'productName', 'specifications'],
+                  },
+                  warnings: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                  conflictingFields: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                  subjectBox: {
+                    type: Type.OBJECT,
+                    properties: {
+                      x: { type: Type.NUMBER },
+                      y: { type: Type.NUMBER },
+                      w: { type: Type.NUMBER },
+                      h: { type: Type.NUMBER },
+                    },
+                    required: ['x', 'y', 'w', 'h'],
+                  },
                 },
-              },
-              confidence: { type: Type.NUMBER },
-              fieldConfidence: {
-                type: Type.OBJECT,
-                properties: {
-                  brand: { type: Type.NUMBER },
-                  model: { type: Type.NUMBER },
-                  category: { type: Type.NUMBER },
-                  productName: { type: Type.NUMBER },
-                  specifications: { type: Type.NUMBER },
-                },
-                required: ['brand', 'model', 'category', 'productName', 'specifications'],
-              },
-              warnings: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              conflictingFields: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              subjectBox: {
-                type: Type.OBJECT,
-                properties: {
-                  x: { type: Type.NUMBER },
-                  y: { type: Type.NUMBER },
-                  w: { type: Type.NUMBER },
-                  h: { type: Type.NUMBER },
-                },
-                required: ['x', 'y', 'w', 'h'],
+                required: [
+                  'productName',
+                  'shortName',
+                  'brand',
+                  'model',
+                  'rawModel',
+                  'categoryId',
+                  'category',
+                  'subCategory',
+                  'visibleText',
+                  'technicalSpecifications',
+                  'confidence',
+                  'fieldConfidence',
+                  'subjectBox',
+                ],
               },
             },
-            required: [
-              'productName',
-              'shortName',
-              'brand',
-              'model',
-              'rawModel',
-              'categoryId',
-              'category',
-              'subCategory',
-              'visibleText',
-              'technicalSpecifications',
-              'confidence',
-              'fieldConfidence',
-              'subjectBox',
-            ],
-          },
-        },
-      });
+          });
+          responseText = (response.text ?? '{}').trim();
+          usedModelName = candidateModel;
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('404') || msg.includes('NOT_FOUND')) {
+            continue;
+          }
+          throw err;
+        }
+      }
 
-      const rawText = (response.text ?? '{}').trim();
-      const parsed = JSON.parse(rawText) as Record<string, unknown>;
+      if (lastErr) {
+        throw lastErr;
+      }
+
+      const parsed = JSON.parse(responseText) as Record<string, unknown>;
 
       // Chuẩn hóa subjectBox nếu AI trả về 0..100 thay vì 0..1
       if (parsed.subjectBox && typeof parsed.subjectBox === 'object') {
@@ -426,7 +461,7 @@ QUY TẮC BẮT BUỘC (TUYỆT ĐỐI TUÂN THỦ):
         ...parsed,
         mode,
         fileNames,
-        recognitionModel: selectedModel,
+        recognitionModel: usedModelName,
         recognizedAt: new Date().toISOString(),
       });
     } catch (err) {

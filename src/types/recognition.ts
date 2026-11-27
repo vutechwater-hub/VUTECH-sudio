@@ -26,7 +26,10 @@ export type {
   AiModelOption,
 };
 
-export type RecognitionModelOption = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite';
+export type RecognitionModelOption =
+  | 'gemini-4-hydrogen'
+  | 'gemini-2.5-flash'
+  | 'gemini-3.1-flash-lite';
 
 export type RecognitionStatus = 'SUCCESS' | 'PARTIAL' | 'MANUAL_REQUIRED' | 'ERROR';
 
