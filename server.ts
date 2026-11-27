@@ -42,8 +42,23 @@ const ALLOWED_ASPECT_RATIOS = new Set([
 
 const ALLOWED_IMAGE_SIZES = new Set(['1K', '2K', '4K']);
 
+function resolveServerApiKey(): string {
+  const candidates = [
+    process.env.GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.API_KEY,
+    process.env.VITE_GEMINI_API_KEY,
+  ];
+  for (const val of candidates) {
+    if (typeof val === 'string' && val.trim().length > 5 && val.trim() !== 'MY_GEMINI_API_KEY') {
+      return val.trim();
+    }
+  }
+  return '';
+}
+
 function getAiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  const apiKey = resolveServerApiKey();
   if (!apiKey) {
     throw new Error('CAUSE_02_MISSING_API_KEY');
   }
@@ -78,12 +93,13 @@ function classifyGeminiErrorV2(err: unknown): DetailedGeminiError {
     return {
       httpStatus: 401,
       errorCode: 'API_KEY_NOT_CONFIGURED',
-      title: 'HTTP 401 – Chưa cấu hình GEMINI_API_KEY trên máy chủ',
+      title: 'HTTP 401 – Máy chủ chưa nhận được biến GEMINI_API_KEY',
       detailMessage:
-        'Biến môi trường GEMINI_API_KEY chưa được thiết lập hoặc chưa được nạp vào tiến trình máy chủ.',
+        'Biến môi trường GEMINI_API_KEY chưa được thiết lập trên máy chủ đang chạy ứng dụng (hoặc bạn vừa thêm biến trên Cloudflare nhưng chưa Redeploy / đặt ở Build variables thay vì Runtime Variables).',
       troubleshootingSteps: [
-        'Kiểm tra biến môi trường GEMINI_API_KEY trong mục Settings > Secrets của hệ thống.',
-        'Trong khi chờ cấu hình API key, bạn có thể nhấn nút "Đối chiếu danh mục" để chọn ngay sản phẩm chuẩn từ cơ sở dữ liệu VUTECH.',
+        'Nếu đang chạy trên AI Studio: Mở Settings (biểu tượng bánh răng) -> Secrets -> thêm GEMINI_API_KEY.',
+        'Nếu đang chạy trên Cloudflare Workers (vutech-sudio.vutechwater.workers.dev): Vào Workers & Pages -> vutech-sudio -> Settings -> Variables and Secrets (Runtime) -> thêm GEMINI_API_KEY và bấm Deploy.',
+        'Đồng thời nhớ đồng bộ/Push code mới nhất từ AI Studio sang GitHub/Cloudflare để Worker nhận file worker.ts.',
       ],
     };
   }

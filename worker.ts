@@ -14,10 +14,14 @@
 
 export interface CloudflareWorkerEnv {
   GEMINI_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+  API_KEY?: string;
+  VITE_GEMINI_API_KEY?: string;
   GEMINI_RECOGNITION_MODEL?: string;
   ASSETS?: {
     fetch: (request: Request) => Promise<Response>;
   };
+  [key: string]: unknown;
 }
 
 interface DetailedGeminiError {
@@ -46,11 +50,30 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 function getWorkerApiKey(env: CloudflareWorkerEnv): string {
-  const key = (env?.GEMINI_API_KEY || '').trim();
-  if (!key) {
-    throw new Error('CAUSE_02_MISSING_API_KEY');
+  const candidates = [
+    env?.GEMINI_API_KEY,
+    env?.GOOGLE_API_KEY,
+    env?.API_KEY,
+    env?.VITE_GEMINI_API_KEY,
+  ];
+  for (const val of candidates) {
+    if (typeof val === 'string' && val.trim().length > 5) {
+      return val.trim();
+    }
   }
-  return key;
+  // Quét tự động mọi biến trong env có chứa từ khóa GEMINI hoặc API_KEY phòng trường hợp đặt lệch chữ hoa/thường
+  if (env && typeof env === 'object') {
+    for (const [k, v] of Object.entries(env)) {
+      if (
+        /gemini|api_?key/i.test(k) &&
+        typeof v === 'string' &&
+        v.trim().length > 10
+      ) {
+        return v.trim();
+      }
+    }
+  }
+  throw new Error('CAUSE_02_MISSING_API_KEY');
 }
 
 /**
