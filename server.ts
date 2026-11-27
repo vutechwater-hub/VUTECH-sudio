@@ -12,6 +12,11 @@ const ALLOWED_IMAGE_MODELS = new Set([
   'gemini-3-pro-image',
 ]);
 
+const ALLOWED_RECOGNITION_MODELS = new Set([
+  'gemini-4-hydrogen',
+  'gemini-3.1-flash-lite',
+]);
+
 const ALLOWED_ASPECT_RATIOS = new Set([
   '1:1',
   '2:3',
@@ -26,9 +31,9 @@ const ALLOWED_ASPECT_RATIOS = new Set([
 const ALLOWED_IMAGE_SIZES = new Set(['1K', '2K', '4K']);
 
 function getAiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error('MISSING_API_KEY');
+    throw new Error('CAUSE_02_MISSING_API_KEY');
   }
   return new GoogleGenAI({
     apiKey,
@@ -40,62 +45,412 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
-function formatGeminiError(err: unknown): { status: number; message: string; code: string } {
+interface DetailedGeminiError {
+  httpStatus: number;
+  errorCode: string;
+  title: string;
+  detailMessage: string;
+  troubleshootingSteps: string[];
+  retryAfterSeconds?: number;
+}
+
+/**
+ * MỤC II: PHÂN LOẠI 15 NGUYÊN NHÂN LỖI API THEO MÃ HTTP & NỘI DUNG PHẢN HỒI THỰC TẾ
+ */
+function classifyGeminiErrorV2(err: unknown): DetailedGeminiError {
   const raw = err instanceof Error ? err.message : String(err);
-  if (raw === 'MISSING_API_KEY') {
+  const upper = raw.toUpperCase();
+
+  // Nguyên nhân 2 & 3: API key chưa được cấu hình hoặc biến môi trường / Secrets chưa đọc được
+  if (raw === 'CAUSE_02_MISSING_API_KEY' || upper.includes('MISSING_API_KEY')) {
     return {
-      status: 503,
-      code: 'MISSING_API_KEY',
-      message:
-        'Chưa cấu hình GEMINI_API_KEY trên máy chủ. Bạn vẫn có thể sử dụng đầy đủ Studio chỉnh sửa & đóng dấu thương hiệu VUTECH (1K–4K) ngay lập tức.',
+      httpStatus: 401,
+      errorCode: 'API_KEY_NOT_CONFIGURED',
+      title: 'HTTP 401 – Chưa cấu hình GEMINI_API_KEY trên máy chủ',
+      detailMessage:
+        'Biến môi trường GEMINI_API_KEY chưa được thiết lập hoặc chưa được nạp vào tiến trình máy chủ.',
+      troubleshootingSteps: [
+        'Kiểm tra biến môi trường GEMINI_API_KEY trong mục Settings > Secrets của hệ thống.',
+        'Trong khi chờ cấu hình API key, bạn có thể nhấn nút "Đối chiếu danh mục" để chọn ngay sản phẩm chuẩn từ cơ sở dữ liệu VUTECH.',
+      ],
     };
   }
-  if (raw.includes('403') || raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID')) {
+
+  // Nguyên nhân 1: API key không hợp lệ (400 / 401 API_KEY_INVALID)
+  if (upper.includes('API_KEY_INVALID') || upper.includes('INVALID API KEY') || upper.includes('401') || upper.includes('UNAUTHENTICATED')) {
     return {
-      status: 403,
-      code: 'API_KEY_PERMISSION',
-      message:
-        'Tính năng AI tạo/chỉnh sửa ảnh yêu cầu API key có bật thanh toán trong mục Settings > Secrets. Bạn vẫn có thể dùng Studio đóng dấu & xuất ảnh chuẩn Web/Facebook 1K–4K hoàn toàn miễn phí.',
+      httpStatus: 401,
+      errorCode: 'INVALID_API_KEY',
+      title: 'HTTP 401 – Lỗi xác thực: API Key không hợp lệ',
+      detailMessage:
+        'GEMINI_API_KEY đang cấu hình không đúng định dạng hoặc đã bị thu hồi.',
+      troubleshootingSteps: [
+        'Kiểm tra lại giá trị GEMINI_API_KEY trong mục Settings > Secrets (không để thừa khoảng trắng hoặc ký tự lạ).',
+        'Sử dụng nút "Đối chiếu danh mục" bên dưới để nạp thông số sản phẩm VUTECH mà không bị gián đoạn công việc.',
+      ],
     };
   }
-  if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota')) {
+
+  // Nguyên nhân 9, 10, 11: Lỗi định dạng ảnh, MIME type, Base64 hoặc kích thước dữ liệu quá lớn (400)
+  if (
+    upper.includes('INVALID_ARGUMENT') ||
+    upper.includes('MIME') ||
+    upper.includes('BASE64') ||
+    upper.includes('PAYLOAD') ||
+    upper.includes('TOO LARGE') ||
+    upper.includes('400')
+  ) {
     return {
-      status: 429,
-      code: 'QUOTA_EXCEEDED',
-      message:
-        'Hạn mức gọi mô hình AI hình ảnh đã đạt giới hạn hoặc cần API key có bật thanh toán trong Settings > Secrets.',
+      httpStatus: 400,
+      errorCode: 'INVALID_IMAGE_OR_REQUEST_PAYLOAD',
+      title: 'HTTP 400 – Dữ liệu ảnh hoặc yêu cầu gửi lên không hợp lệ',
+      detailMessage:
+        'Định dạng ảnh (MIME type), chuỗi Base64 hoặc dung lượng dữ liệu gửi tới Gemini API không hợp lệ.',
+      troubleshootingSteps: [
+        'Hãy sử dụng ảnh định dạng chuẩn JPG, PNG hoặc WEBP có kích thước dưới 10 MB.',
+        'Nhấn "AI nhận diện lại" để hệ thống tự động chuẩn hóa lại bản sao ảnh nhận diện.',
+      ],
     };
   }
-  if (raw.includes('404') || raw.includes('NOT_FOUND')) {
+
+  // Nguyên nhân 4 & 8: API key không có quyền truy cập model hoặc tài khoản chưa đủ điều kiện (403)
+  if (upper.includes('403') || upper.includes('PERMISSION_DENIED') || upper.includes('BILLING')) {
     return {
-      status: 404,
-      code: 'MODEL_NOT_FOUND',
-      message:
-        'Mô hình AI hình ảnh hiện chưa khả dụng với API key đang dùng. Vui lòng thử chuyển mô hình hoặc kiểm tra API key trong Settings > Secrets.',
+      httpStatus: 403,
+      errorCode: 'MODEL_PERMISSION_DENIED',
+      title: 'HTTP 403 – Không có quyền truy cập Model AI này',
+      detailMessage:
+        'API Key hiện tại không có quyền gọi model được chọn hoặc tài khoản chưa bật quyền tương ứng.',
+      troubleshootingSteps: [
+        'Thử chuyển Model nhận diện sang "gemini-3.1-flash-lite" hoặc "gemini-4-hydrogen" trong bảng Cấu hình nhận diện.',
+        'Hoặc sử dụng "Đối chiếu danh mục" để lấy thông tin chuẩn xác từ danh mục VUTECH.',
+      ],
     };
   }
+
+  // Nguyên nhân 5: Model đã ngừng hỗ trợ hoặc tên model không hợp lệ (404)
+  if (upper.includes('404') || upper.includes('NOT_FOUND') || upper.includes('IS NOT FOUND')) {
+    return {
+      httpStatus: 404,
+      errorCode: 'MODEL_NOT_FOUND',
+      title: 'HTTP 404 – Model AI không tồn tại hoặc không khả dụng',
+      detailMessage:
+        'Tên model yêu cầu không tồn tại trên vùng máy chủ hiện tại.',
+      troubleshootingSteps: [
+        'Chọn model nhận diện khác ("gemini-4-hydrogen" hoặc "gemini-3.1-flash-lite") trong mục Model Nhận Diện AI.',
+        'Không ảnh hưởng tới dữ liệu sản phẩm: bạn có thể chọn nhanh sản phẩm trong "Đối chiếu danh mục".',
+      ],
+    };
+  }
+
+  // Nguyên nhân 6 & 7: Vượt giới hạn quota hoặc giới hạn RPM/RPD (429)
+  if (
+    upper.includes('429') ||
+    upper.includes('RESOURCE_EXHAUSTED') ||
+    upper.includes('QUOTA') ||
+    upper.includes('RATE_LIMIT')
+  ) {
+    const retryMatch = raw.match(/retry in (\d+(\.\d+)?)s/i);
+    const retryAfterSeconds = retryMatch ? Math.ceil(Number(retryMatch[1])) : 15;
+    return {
+      httpStatus: 429,
+      errorCode: 'QUOTA_OR_RATE_LIMIT_EXCEEDED',
+      title: 'HTTP 429 – Vượt hạn mức Quota hoặc giới hạn tần suất gọi API (RPM/RPD)',
+      detailMessage:
+        `Tài khoản API đã vượt số lượt gọi cho phép trong phút/ngày. ${retryMatch ? `Có thể thử lại sau ${retryAfterSeconds} giây.` : ''}`,
+      troubleshootingSteps: [
+        `Chờ khoảng ${retryAfterSeconds} giây rồi nhấn "AI nhận diện lại", hoặc chuyển sang model nhẹ "gemini-3.1-flash-lite".`,
+        'Sử dụng ngay tính năng "Đối chiếu danh mục" hoặc nhập Thương hiệu + Model để chuẩn hóa tự động không cần chờ quota.',
+      ],
+      retryAfterSeconds,
+    };
+  }
+
+  // Nguyên nhân 12: Lỗi phân tích JSON trả về từ AI
+  if (upper.includes('JSON') || upper.includes('SYNTAXERROR') || upper.includes('UNEXPECTED TOKEN')) {
+    return {
+      httpStatus: 500,
+      errorCode: 'AI_JSON_PARSE_ERROR',
+      title: 'HTTP 500 – Lỗi cấu trúc dữ liệu JSON trả về từ AI',
+      detailMessage:
+        'Phản hồi từ mô hình AI bị cắt ngang hoặc không đúng định dạng JSON Schema.',
+      troubleshootingSteps: [
+        'Nhấn "AI nhận diện lại" để thực hiện lại lượt trích xuất có kiểm soát Schema.',
+        'Hoặc chọn sản phẩm từ "Đối chiếu danh mục" VUTECH.',
+      ],
+    };
+  }
+
+  // Nguyên nhân 15: Lỗi kết nối mạng hoặc timeout / 500 / 503
   return {
-    status: 500,
-    code: 'AI_ERROR',
-    message: `Không thể xử lý yêu cầu AI lúc này: ${raw.slice(0, 220)}`,
+    httpStatus: 503,
+    errorCode: 'UPSTREAM_AI_SERVICE_ERROR',
+    title: 'HTTP 503 – Dịch vụ AI tạm thời quá tải hoặc gián đoạn kết nối',
+    detailMessage: `Chi tiết phản hồi máy chủ: ${raw.slice(0, 220)}`,
+    troubleshootingSteps: [
+      'Thử nhấn "AI nhận diện lại" sau vài giây hoặc đổi sang model "gemini-3.1-flash-lite".',
+      'Sử dụng nút "Đối chiếu danh mục" để tra cứu trực tiếp danh mục vật tư xử lý nước VUTECH.',
+    ],
+  };
+}
+
+function formatGeminiError(err: unknown): { status: number; message: string; code: string } {
+  const classified = classifyGeminiErrorV2(err);
+  return {
+    status: classified.httpStatus,
+    code: classified.errorCode,
+    message: `${classified.title}: ${classified.detailMessage}`,
   };
 }
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '30mb' }));
+  app.use(express.json({ limit: '35mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, hasApiKey: Boolean(process.env.GEMINI_API_KEY) });
   });
 
-  // Analyze uploaded product image and generate Vietnamese VUTECH specs & Facebook caption
+  /**
+   * SMART PRODUCT RECOGNITION ENGINE 2.0 ENDPOINT
+   * Tách biệt hoàn toàn khỏi module tạo ảnh (Image Generation).
+   * Hỗ trợ:
+   * - Nhận diện 1 ảnh gốc (Chế độ B) hoặc kết hợp 1–5 ảnh nhiều góc chụp của cùng 1 sản phẩm (Chế độ A)
+   * - Đọc nguyên văn toàn bộ chữ trên tem nhãn/bao bì (visibleText)
+   * - Không bao giờ tự bịa mã VT-01, VT-02 hoặc tự gắn thương hiệu VUTECH thay cho thương hiệu gốc trên bao bì
+   */
+  app.post('/api/gemini/recognize-product-v2', async (req, res) => {
+    try {
+      const {
+        images = [],
+        fileNames = [],
+        recognitionModel = 'gemini-4-hydrogen',
+        mode = 'full-recognition',
+      } = req.body as {
+        images?: Array<{ mimeType?: string; base64Data?: string }>;
+        fileNames?: string[];
+        recognitionModel?: string;
+        mode?: 'full-recognition' | 'ocr-only';
+      };
+
+      if (!Array.isArray(images) || images.length === 0) {
+        res.status(400).json({
+          errorCode: 'EMPTY_IMAGE_LIST',
+          error: 'HTTP 400 – Chưa có dữ liệu ảnh gốc để nhận diện',
+          detailMessage: 'Vui lòng tải lên ít nhất 01 ảnh sản phẩm gốc.',
+          troubleshootingSteps: ['Tải lên ảnh sản phẩm định dạng JPG, PNG hoặc WEBP.'],
+        });
+        return;
+      }
+
+      const selectedModel = ALLOWED_RECOGNITION_MODELS.has(recognitionModel)
+        ? recognitionModel
+        : 'gemini-4-hydrogen';
+
+      const ai = getAiClient();
+      const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
+
+      for (const img of images.slice(0, 5)) {
+        const b64 = (img.base64Data || '').trim();
+        if (!b64) continue;
+        const cleanBase64 = b64.includes(',') ? b64.split(',')[1] : b64;
+        const safeMime =
+          img.mimeType && img.mimeType.startsWith('image/') ? img.mimeType : 'image/jpeg';
+        parts.push({
+          inlineData: {
+            mimeType: safeMime,
+            data: cleanBase64,
+          },
+        });
+      }
+
+      if (parts.length === 0) {
+        res.status(400).json({
+          errorCode: 'INVALID_BASE64_DATA',
+          error: 'HTTP 400 – Dữ liệu Base64 của ảnh sản phẩm không hợp lệ',
+          detailMessage: 'Không tìm thấy chuỗi dữ liệu hình ảnh hợp lệ trong yêu cầu.',
+          troubleshootingSteps: ['Kiểm tra lại file ảnh tải lên và thử lại.'],
+        });
+        return;
+      }
+
+      const isMultiAngle = parts.length > 1;
+      const promptText = `Bạn là Hệ thống Smart Product Recognition Engine 2.0 chuyên ngành vật tư, thiết bị và công nghệ xử lý nước của CÔNG TY TNHH XNK VUTECH.
+${isMultiAngle ? `Người dùng đang cung cấp ${parts.length} ảnh góc chụp khác nhau của CÙNG MỘT SẢN PHẨM (mặt trước, mặt sau, tem nhãn, bao bì). Hãy hợp nhất toàn bộ chữ đọc được và thông số từ tất cả các ảnh. Nếu có thông tin mâu thuẫn giữa các ảnh, hãy ghi tên trường đó vào mảng conflictingFields.` : 'Hãy quan sát trực tiếp ảnh gốc của sản phẩm và tem nhãn/bao bì.'}
+
+QUY TẮC BẮT BUỘC (TUYỆT ĐỐI TUÂN THỦ):
+1. ĐỌC CHỮ TRÊN TEM NHÃN / BAO BÌ TRƯỚC (OCR):
+   - Trích xuất NGUYÊN VĂN toàn bộ các dòng chữ, thương hiệu, mã hiệu, quy cách đọc được trên bao bì/tem nhãn vào mảng "visibleText" (ví dụ: ["EXTREPURE", "001X7(C100)", "STRONG ACID CATION EXCHANGE RESIN", "25 LITERS"]).
+2. KHÔNG BỊA ĐẶT THƯƠNG HIỆU HOẶC MODEL:
+   - Nếu trên bao bì/tem nhãn ghi thương hiệu nhà sản xuất (ví dụ: EXTREPURE, FROTEC, RUNMO, RUNXIN, PUROLITE, DUPONT, FILMTEC, TORAY, HYDRANAUTICS, VONTRON, HONSUN, HUAMO, PENTAIR, CANATURE, CNP, GRUNDFOS, SEKO, CANPURE, IONPURE...), BẮT BUỘC giữ đúng thương hiệu đó trong trường "brand".
+   - TUYỆT ĐỐI KHÔNG tự ý gắn "VUTECH" làm "brand" hoặc thay thế thương hiệu gốc trên bao bì bằng VUTECH (VUTECH là đơn vị nhập khẩu/phân phối trong trường "distributor", trừ khi sản phẩm là Hệ thống lọc nước RO/UF hoàn chỉnh do VUTECH lắp ráp).
+   - TUYỆT ĐỐI KHÔNG tự sinh mã giả như "VT-01", "VT-02", "VT-03", "VT-xxxx".
+   - Trường "rawModel" giữ nguyên văn mã in trên bao bì (ví dụ: "001X7(C100)"). Trường "model" chuẩn hóa ký hiệu toán học/khoảng trắng (ví dụ: "001×7 (C100)", "1812-75 GPD", "XLPFT-8040", "F63B1", "KXA-200").
+   - Nếu trên ảnh hoàn toàn không đọc được thương hiệu, trả về brand = "Chưa xác định thương hiệu" và fieldConfidence.brand < 0.5.
+   - Nếu trên ảnh hoàn toàn không đọc được mã model, trả về model = "Chưa xác định model", rawModel = "" và fieldConfidence.model < 0.5.
+3. PHÂN LOẠI CHÍNH XÁC VÀO 1 TRONG 10 NHÓM NGÀNH XỬ LÝ NƯỚC ("categoryId" và "category"):
+   - "01_ro_membrane": "Màng lọc RO" (1812, 2012, 2812, 3012, 3013, 4040, 6040, 8040, BW, SW, XLP, ULP...)
+   - "02_uf_membrane": "Màng lọc UF" (Màng UF PAN, PVDF, PES, sợi rỗng, 40m²...)
+   - "03_ion_resin": "Hạt nhựa trao đổi ion" (Hạt nhựa Cation, Anion, Mixed Bed, 001×7, 001×8, C100...)
+   - "04_filter_media": "Vật liệu lọc nước" (Than hoạt tính, Cát thạch anh, Cát mangan, Birm, Corosex, ODM-2F...)
+   - "05_vessels_tanks": "Cột lọc và bồn chứa" (Cột lọc FRP/Composite 0844..3672, Cột Inox, Bồn muối, Bồn hóa chất...)
+   - "06_control_valves": "Van điều khiển" (Van tự động RUNXIN F63B1/F65B1/F67C1/F71B1, Van cơ 3 ngả/5 ngả, Autotrol, Clack...)
+   - "07_membrane_housings": "Vỏ màng lọc" (Vỏ màng RO dân dụng, Vỏ màng Composite/Inox 4040, 8040...)
+   - "08_edi_equipment": "Thiết bị EDI" (Module EDI KXA-200, Canpure, Ionpure...)
+   - "09_auxiliary_equipment": "Thiết bị phụ trợ" (Bơm cao áp CNP/Grundfos, Bơm định lượng, Đồng hồ áp, Lưu lượng kế, Cảm biến TDS/Độ dẫn, Tủ điện PLC...)
+   - "10_complete_systems": "Hệ thống xử lý nước hoàn chỉnh" (Hệ thống RO công nghiệp, Hệ thống UF, Hệ thống EDI, Hệ thống lọc tổng...)
+4. CHUẨN HÓA TÊN SẢN PHẨM ("productName" và "shortName"):
+   - Công thức: [Loại sản phẩm cụ thể] + [Thương hiệu] + [Model chuẩn] + [Thông số phân biệt chính nếu đã xác thực].
+   - Ví dụ bắt buộc: Nếu đọc được "EXTREPURE" + "001X7(C100)" + "STRONG ACID CATION EXCHANGE RESIN" -> productName = "Hạt Nhựa Cation EXTREPURE 001×7 (C100)", shortName = "Hạt Nhựa Cation EXTREPURE 001×7".
+   - Ví dụ khác: "Màng RO FROTEC 1812-75 GPD", "Màng RO Công Nghiệp FROTEC XLPFT-8040", "Van Tự Động Làm Mềm Nước RUNXIN F63B1", "Module EDI KXA-200", "Cột Lọc Composite FRP 1054".
+5. THÔNG SỐ KỸ THUẬT ĐỘNG THEO ĐÚNG CHỦNG LOẠI ("technicalSpecifications"):
+   - Chỉ trích xuất các thông số thực sự đọc được trên tem nhãn (source = "IMAGE_LABEL") hoặc thuộc chuẩn kỹ thuật đã xác thực của chính model đó (source = "PRODUCT_CATALOG").
+   - TUYỆT ĐỐI KHÔNG gắn thông số của van điện/máy lọc (như "Nguồn điện DC 12V - 1.5A", "3 chế độ lọc và sục rửa", "Lưu lượng 2 m³/giờ") cho bao Hạt nhựa trao đổi ion hoặc Vật liệu lọc!
+   - Đối với Hạt nhựa trao đổi ion (03_ion_resin): chỉ dùng các thông số như Loại hạt nhựa, Cấu trúc Polymer, Nhóm chức năng, Dạng ion (Na⁺), Tổng dung lượng trao đổi (eq/L), Kích thước hạt (mm), Độ ẩm (%), Quy cách đóng gói (25 Lít/bao).
+6. VÙNG KHUNG HÌNH SẢN PHẨM ("subjectBox"):
+   - Tọa độ chuẩn hóa từ 0.0 đến 1.0 (x, y, w, h) bao sát sản phẩm chính trong ảnh đầu tiên.`;
+
+      parts.push({ text: promptText });
+
+      const response = await ai.models.generateContent({
+        model: selectedModel,
+        contents: { parts },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              productName: { type: Type.STRING },
+              shortName: { type: Type.STRING },
+              brand: { type: Type.STRING },
+              manufacturer: { type: Type.STRING },
+              model: { type: Type.STRING },
+              rawModel: { type: Type.STRING },
+              sku: { type: Type.STRING },
+              categoryId: { type: Type.STRING },
+              category: { type: Type.STRING },
+              subCategory: { type: Type.STRING },
+              material: { type: Type.STRING },
+              origin: { type: Type.STRING },
+              packaging: { type: Type.STRING },
+              applications: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              visibleText: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              technicalSpecifications: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    value: { type: Type.STRING },
+                    unit: { type: Type.STRING },
+                    source: { type: Type.STRING },
+                    confidence: { type: Type.NUMBER },
+                    verified: { type: Type.BOOLEAN },
+                  },
+                  required: ['name', 'value', 'source', 'confidence', 'verified'],
+                },
+              },
+              confidence: { type: Type.NUMBER },
+              fieldConfidence: {
+                type: Type.OBJECT,
+                properties: {
+                  brand: { type: Type.NUMBER },
+                  model: { type: Type.NUMBER },
+                  category: { type: Type.NUMBER },
+                  productName: { type: Type.NUMBER },
+                  specifications: { type: Type.NUMBER },
+                },
+                required: ['brand', 'model', 'category', 'productName', 'specifications'],
+              },
+              warnings: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              conflictingFields: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              subjectBox: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  w: { type: Type.NUMBER },
+                  h: { type: Type.NUMBER },
+                },
+                required: ['x', 'y', 'w', 'h'],
+              },
+            },
+            required: [
+              'productName',
+              'shortName',
+              'brand',
+              'model',
+              'rawModel',
+              'categoryId',
+              'category',
+              'subCategory',
+              'visibleText',
+              'technicalSpecifications',
+              'confidence',
+              'fieldConfidence',
+              'subjectBox',
+            ],
+          },
+        },
+      });
+
+      const rawText = (response.text ?? '{}').trim();
+      const parsed = JSON.parse(rawText) as Record<string, unknown>;
+
+      // Chuẩn hóa subjectBox nếu AI trả về 0..100 thay vì 0..1
+      if (parsed.subjectBox && typeof parsed.subjectBox === 'object') {
+        const sb = parsed.subjectBox as Record<string, number>;
+        if ((sb.w ?? 0) > 1.5 || (sb.h ?? 0) > 1.5 || (sb.x ?? 0) > 1.5 || (sb.y ?? 0) > 1.5) {
+          parsed.subjectBox = {
+            x: Number(((sb.x || 0) / 100).toFixed(3)),
+            y: Number(((sb.y || 0) / 100).toFixed(3)),
+            w: Number(((sb.w || 76) / 100).toFixed(3)),
+            h: Number(((sb.h || 76) / 100).toFixed(3)),
+          };
+        }
+      }
+
+      res.json({
+        ...parsed,
+        mode,
+        fileNames,
+        recognitionModel: selectedModel,
+        recognizedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      const classified = classifyGeminiErrorV2(err);
+      res.status(classified.httpStatus).json({
+        error: classified.title,
+        errorCode: classified.errorCode,
+        detailMessage: classified.detailMessage,
+        troubleshootingSteps: classified.troubleshootingSteps,
+        retryAfterSeconds: classified.retryAfterSeconds,
+        apiError: {
+          ...classified,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+  });
+
+  // Giữ tương thích ngược cho endpoint cũ /api/gemini/analyze-product nhưng bỏ hoàn toàn prompt ép gán VUTECH / VT-xxxx
   app.post('/api/gemini/analyze-product', async (req, res) => {
     try {
-      const { imageBase64, mimeType, existingName } = req.body as {
+      const { imageBase64, mimeType } = req.body as {
         imageBase64?: string;
         mimeType?: string;
-        existingName?: string;
       };
 
       if (!imageBase64 || typeof imageBase64 !== 'string') {
@@ -107,19 +462,11 @@ async function startServer() {
       const cleanBase64 = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
       const safeMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
 
-      const promptText = `Bạn là kỹ sư kỹ thuật và chuyên gia marketing ngành thiết bị lọc nước của Công ty TNHH XNK VUTECH (Việt Nam, Hotline: 09.6759.6739).
-Hãy QUAN SÁT TRỰC TIẾP hình ảnh thiết bị lọc nước này để nhận diện chính xác CHỦNG LOẠI thiết bị (ví dụ: Hệ thống lọc nước RO công nghiệp, Hệ thống lọc tổng đầu nguồn cột Composite/Inox, Bộ lọc siêu lọc UF Inox 304, Máy lọc nước RO tủ đứng nóng lạnh, Máy lọc nước để gầm, Màng lọc RO công nghiệp, Lõi lọc nước, Vỏ màng lọc Inox/FRP, Bơm cao áp lọc nước, Đèn UV diệt khuẩn, Van tự động Autovalve, Bồn muối hoàn nguyên, v.v.).
-TUYỆT ĐỐI KHÔNG dùng tên file ảnh vô nghĩa như IMG_xxxx, zalo_xxx, photo_xxx làm tên sản phẩm.
-
-Trả về JSON tiếng Việt chuẩn thương mại:
-- category: Chủng loại thiết bị lọc nước chính xác mà bạn nhận diện được từ ảnh (ngắn gọn dưới 30 ký tự, ví dụ: Lọc tổng đầu nguồn, Hệ thống RO công nghiệp, Máy lọc nước gia đình, Màng & Lõi lọc nước, Phụ kiện ngành lọc nước).
-- productName: Tên sản phẩm thương mại PHẢI được đặt tự động khớp chính xác với đúng chủng loại & đặc điểm thực tế nhìn thấy trong ảnh kèm thương hiệu VUTECH (không quá 58 ký tự, ví dụ: "Hệ Thống Lọc Tổng Đầu Nguồn 3 Cột Composite VUTECH", "Bộ Lọc Siêu Lọc UF Inox 304 VUTECH", "Màng Lọc Nước RO Công Nghiệp 4040 VUTECH").
-- modelCode: Mã model chuẩn VUTECH tương ứng đúng chủng loại (ví dụ: VT-RO500, VT-UF2000, VT-COMP3, VT-ML4040).
-- specs: Đúng 3 thông số kỹ thuật nổi bật ngắn gọn (mỗi dòng dưới 28 ký tự) sát thực tế với đúng chủng loại thiết bị nhìn thấy trong ảnh.
-- tagline: 1 câu cam kết/giá trị thương hiệu ngắn gọn dưới 50 ký tự phù hợp đúng chủng loại sản phẩm.
-- priceBadge: Nhãn nhấn ngắn gọn dưới 22 ký tự (ví dụ: Chính hãng VUTECH / Bảo hành 24 tháng / Lắp đặt tận nơi).
-- facebookCaption: Đoạn bài đăng Facebook chuyên nghiệp 4-6 dòng giới thiệu đúng sản phẩm cho Công ty TNHH XNK VUTECH kèm Hotline: 09.6759.6739 và 4 hashtag phù hợp.
-- subjectBox: Khung bao SÁT CHÍNH XÁC vùng thực tế của thiết bị lọc nước chính trong ảnh gốc theo phần trăm (0 đến 100) gồm x (mép trái của máy), y (mép trên cùng của máy/đồng hồ), w (chiều rộng thực tế của máy), h (chiều cao thực tế từ đỉnh tới chân đế), loại trừ tường trống/sàn nhà thừa xung quanh để hệ thống tự động zoom lấy khung hình chính chủ đạo và làm mờ phần nền ngoài.`;
+      const promptText = `Bạn là hệ thống nhận diện sản phẩm ngành xử lý nước của Công ty TNHH XNK VUTECH.
+Hãy đọc chữ trên tem nhãn/bao bì trước (OCR) và nhận diện chính xác:
+- Không tự bịa mã VT-01, VT-02. Nếu trên tem có model (ví dụ: 001X7(C100), F63B1, XLPFT-8040), chuẩn hóa thành modelCode (ví dụ: "001×7 (C100)"). Nếu không có chữ model trên ảnh, để modelCode = "".
+- Giữ đúng thương hiệu gốc trên bao bì (ví dụ: EXTREPURE, FROTEC, RUNXIN, PUROLITE...). Không thay thương hiệu nhà sản xuất bằng VUTECH.
+- Chỉ trích xuất các thông số thực sự phù hợp với đúng loại sản phẩm đó.`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',

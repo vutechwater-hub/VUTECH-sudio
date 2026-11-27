@@ -976,11 +976,16 @@ export async function renderStudioCanvas(
     cursorY += Math.round(84 * u);
 
     // Category + Model metadata line
+    const hasVerifiedModel =
+      Boolean(config.modelCode) &&
+      !config.modelCode.startsWith('Chưa xác định') &&
+      !/^VT-0[1-9]$/i.test(config.modelCode);
+
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.font = `700 ${Math.round(22 * u)}px "Plus Jakarta Sans", sans-serif`;
     ctx.fillStyle = isMinimalLuxury ? '#F5D882' : darkLeft ? '#7DD3FC' : '#0052B4';
-    const metaLine = [config.category, config.modelCode ? `Model ${config.modelCode}` : '']
+    const metaLine = [config.category, hasVerifiedModel ? `Model ${config.modelCode}` : '']
       .filter(Boolean)
       .join('  ·  ');
     ctx.fillText(metaLine, textPad, cursorY);
@@ -991,7 +996,7 @@ export async function renderStudioCanvas(
     const titleSize = Math.round((aspect > 2 ? 46 : 52) * u);
     ctx.font = `800 ${titleSize}px "Plus Jakarta Sans", sans-serif`;
     ctx.fillStyle = darkLeft ? '#FFFFFF' : '#0F172A';
-    const titleLines = wrapText(ctx, config.productName || 'Thiết Bị Lọc Nước VUTECH', textMaxW, 3);
+    const titleLines = wrapText(ctx, config.productName || 'Cần bổ sung thông tin sản phẩm', textMaxW, 3);
     for (const line of titleLines) {
       ctx.fillText(line, textPad, cursorY);
       cursorY += Math.round(titleSize * 1.18);
@@ -1060,7 +1065,7 @@ export async function renderStudioCanvas(
       ctx.font = `600 ${Math.round(18 * u)}px "JetBrains Mono", monospace`;
       ctx.fillStyle = isMinimalLuxury ? '#F5D882' : darkLeft ? '#BAE6FD' : '#0052B4';
       if (isShopeeDetail) {
-        ctx.fillText('CHÍNH HÃNG VUTECH  ·  BẢO HÀNH TOÀN QUỐC', textPad, footY + Math.round(28 * u));
+        ctx.fillText('PHÂN PHỐI BỞI VUTECH  ·  HÀNG CHÍNH NGẠCH', textPad, footY + Math.round(28 * u));
       } else {
         const fbLabel = config.facebookPage?.trim()
           ? /^(fb|facebook)/i.test(config.facebookPage.trim())
@@ -1141,6 +1146,11 @@ export async function renderStudioCanvas(
   if (logoAlign !== 'center') {
     const metaX = logoAlign === 'left' ? width - pad : pad;
     const metaAlign = logoAlign === 'left' ? 'right' : 'left';
+    const hasVerifiedModel =
+      Boolean(config.modelCode) &&
+      !config.modelCode.startsWith('Chưa xác định') &&
+      !/^VT-0[1-9]$/i.test(config.modelCode);
+
     ctx.save();
     ctx.textAlign = metaAlign;
     ctx.textBaseline = 'middle';
@@ -1152,9 +1162,9 @@ export async function renderStudioCanvas(
         : isMinimalLuxury
         ? '#0B162C'
         : '#0052B4';
-      ctx.fillText(config.category, metaX, logoY - Math.round(13 * u));
+      ctx.fillText(config.category, metaX, hasVerifiedModel ? logoY - Math.round(13 * u) : logoY);
     }
-    if (config.modelCode) {
+    if (hasVerifiedModel) {
       ctx.font = `700 ${Math.round(18 * u)}px "JetBrains Mono", monospace`;
       ctx.fillStyle = isDarkHeader
         ? '#93C5FD'
@@ -1255,7 +1265,7 @@ export async function renderStudioCanvas(
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
 
-      const titleLines = wrapText(ctx, config.productName || 'Thiết bị lọc nước VUTECH', contentMaxW, 2);
+      const titleLines = wrapText(ctx, config.productName || 'Cần bổ sung thông tin sản phẩm', contentMaxW, 2);
       for (const line of titleLines) {
         ctx.fillText(line, pad, y);
         y += Math.round(titleFontSize * 1.18);
@@ -1275,7 +1285,7 @@ export async function renderStudioCanvas(
         y += Math.round(8 * u);
       }
 
-      // 3 Technical Specs structured cleanly
+      // Dynamic Verified Technical Specs (renders 1, 2, or 3 verified columns cleanly; omits row if 0)
       const validSpecs = config.specs.filter((s) => s.trim().length > 0);
       if (validSpecs.length > 0) {
         if (isTall) {
@@ -1293,7 +1303,7 @@ export async function renderStudioCanvas(
             y += Math.round(32 * u);
           }
         } else {
-          // 3 balanced inline columns separated by crisp hairline dividers
+          // 1 to 3 balanced inline columns separated by crisp hairline dividers
           const colCount = validSpecs.length;
           const colW = contentMaxW / colCount;
           const specY = y + Math.round(6 * u);
@@ -1352,7 +1362,7 @@ export async function renderStudioCanvas(
 
       if (isShopeeDetail) {
         ctx.fillText(
-          'CHÍNH HÃNG VUTECH · BẢO HÀNH TOÀN QUỐC',
+          'PHÂN PHỐI BỞI VUTECH · HÀNG CHÍNH NGẠCH',
           width - pad,
           barY + contactBarH / 2
         );
@@ -1376,12 +1386,17 @@ export function buildExportFileName(
   format: ExportFormat,
   overrideRatio?: string
 ): string {
-  const safeCode = (config.modelCode || config.productName || 'SanPham')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32);
+  const baseSlug =
+    config.channelNames?.asciiFileName ||
+    (config.modelCode || config.productName || 'vutech-product')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'D')
+      .replace(/×/g, 'x')
+      .replace(/[^a-zA-Z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48);
   const ratioSlug = (overrideRatio ?? config.aspectRatio).replace(':', 'x');
   const templateSlug =
     config.template === 'shopee-cover'
@@ -1389,7 +1404,7 @@ export function buildExportFileName(
       : config.template === 'shopee-detail'
       ? '_ShopeeChiTiet'
       : '';
-  return `VUTECH_${safeCode}${templateSlug}_${ratioSlug}_${config.resolution}.${format === 'jpeg' ? 'jpg' : 'png'}`;
+  return `VUTECH_${baseSlug}${templateSlug}_${ratioSlug}_${config.resolution}.${format === 'jpeg' ? 'jpg' : 'png'}`;
 }
 
 export async function exportStudioImage(

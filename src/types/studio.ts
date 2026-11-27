@@ -1,3 +1,15 @@
+import type {
+  ProductRecognitionRecord,
+  MultiChannelProductNames,
+  RecognitionModelOption,
+} from './recognition';
+
+export type {
+  ProductRecognitionRecord,
+  MultiChannelProductNames,
+  RecognitionModelOption,
+};
+
 export type AspectRatioOption =
   | '1:1'
   | '2:3'
@@ -34,6 +46,8 @@ export type ExportFormat = 'png' | 'jpeg';
 export type WorkspaceTab = 'studio' | 'ai' | 'channels' | 'library';
 
 export type AiModelOption = 'gemini-nano-banana-2.1' | 'gemini-3-pro-image';
+
+export type BatchRecognitionMode = 'independent' | 'multi-angle-single-product';
 
 export interface SubjectBox {
   /** Normalized 0..1 coordinates of the main product inside the source image */
@@ -85,6 +99,23 @@ export interface StudioConfig {
   showSpecsPanel: boolean;
   showContactFooter: boolean;
   facebookCaption: string;
+  /** Smart Product Recognition Engine 2.0 structured record */
+  recognitionRecord?: ProductRecognitionRecord;
+  /** Per-field lock flags so AI re-recognition never overwrites user-confirmed fields */
+  lockedFields?: Record<string, boolean>;
+  /** Snapshot before re-recognition so user can restore previous data */
+  previousSnapshot?: {
+    productName: string;
+    modelCode: string;
+    category: string;
+    tagline: string;
+    specs: [string, string, string];
+    priceBadge: string;
+    facebookCaption: string;
+    recognitionRecord?: ProductRecognitionRecord;
+  };
+  /** Auto-generated 7 multi-channel product names */
+  channelNames?: MultiChannelProductNames;
 }
 
 export interface SampleProduct {
@@ -99,6 +130,7 @@ export interface SampleProduct {
   priceBadge: string;
   recommendedTemplate: TemplateId;
   facebookCaption: string;
+  recognitionRecord?: ProductRecognitionRecord;
 }
 
 export interface ChannelPreset {
@@ -152,5 +184,7 @@ export interface BatchProductItem {
   config: StudioConfig;
   status: BatchAnalysisStatus;
   statusMessage: string | null;
+  requestId?: string;
 }
+
 

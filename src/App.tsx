@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AiImageStudio } from './components/AiImageStudio';
 import { CanvasStage } from './components/CanvasStage';
 import { LibraryView } from './components/LibraryView';
@@ -13,7 +13,9 @@ import {
 import type {
   AiGeneratedItem,
   BatchProductItem,
+  BatchRecognitionMode,
   ExportFormat,
+  RecognitionModelOption,
   SavedDesign,
   StudioConfig,
   WorkspaceTab,
@@ -24,6 +26,10 @@ import {
   recommendAspectRatioForSubject,
   renderThumbnailDataUrl,
 } from './utils/canvasRenderer';
+import {
+  applyRecognitionRecordToStudioConfig,
+  runSmartProductRecognitionPipeline,
+} from './utils/productRecognitionEngine';
 
 const STORAGE_LIBRARY_KEY = 'vutech_brand_studio_library_v1';
 
@@ -73,7 +79,7 @@ function readFileAsDataUrl(file: File): Promise<{ dataUrl: string; cleanName: st
     reader.onload = () => {
       if (typeof reader.result === 'string') {
         const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim();
-        resolve({ dataUrl: reader.result, cleanName: cleanName || 'Sản phẩm lọc nước' });
+        resolve({ dataUrl: reader.result, cleanName: cleanName || 'Ảnh sản phẩm gốc' });
       } else {
         reject(new Error('Không thể đọc tệp ảnh'));
       }
@@ -83,33 +89,15 @@ function readFileAsDataUrl(file: File): Promise<{ dataUrl: string; cleanName: st
   });
 }
 
-async function imageUrlToDataUrl(url: string): Promise<{ base64: string; mimeType: string }> {
-  if (url.startsWith('data:')) {
-    const match = url.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
-    if (match) return { mimeType: match[1], base64: match[2] };
-  }
-  const res = await fetch(url);
-  const blob = await res.blob();
-  const mimeType = blob.type || 'image/jpeg';
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const str = String(reader.result || '');
-      resolve({
-        mimeType,
-        base64: str.includes(',') ? str.split(',')[1] : str,
-      });
-    };
-    reader.onerror = () => reject(new Error('Không thể đọc ảnh'));
-    reader.readAsDataURL(blob);
-  });
-}
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('studio');
   const [batchItems, setBatchItems] = useState<BatchProductItem[]>(() => [createInitialBatchItem()]);
   const [activeItemId, setActiveItemId] = useState<string>('sample-default');
   const [syncBatchLayout, setSyncBatchLayout] = useState<boolean>(true);
+  const [batchRecognitionMode, setBatchRecognitionMode] =
+    useState<BatchRecognitionMode>('independent');
+  const [recognitionModel, setRecognitionModel] =
+    useState<RecognitionModelOption>('gemini-4-hydrogen');
   const [batchNotice, setBatchNotice] = useState<string | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
   const [isExporting, setIsExporting] = useState(false);
@@ -126,6 +114,9 @@ export default function App() {
       return [];
     }
   });
+
+  // Track latest requestId per itemId so async recognition results never cross-contaminate
+  const activeRequestMapRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     try {
@@ -163,155 +154,167 @@ export default function App() {
     );
   };
 
+  /**
+   * SMART PRODUCT RECOGNITION ENGINE 2.0 – Xử lý nhận diện cho 01 ảnh sản phẩm (Chế độ B)
+   * hoặc gộp nhiều góc chụp của cùng 01 sản phẩm (Chế độ A).
+   * Luôn đọc trực tiếp từ ảnh gốc (sourceImageUrl), có khóa requestId chống ghi đè chéo.
+   */
   const runProductAnalysisForItem = async (
     itemId: string,
     imageUrl: string,
-    existingName: string
+    existingName: string,
+    options?: {
+      bypassCache?: boolean;
+      mode?: 'full-recognition' | 'ocr-only';
+      multiAngleUrls?: string[];
+      multiAngleNames?: string[];
+    }
   ) => {
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    activeRequestMapRef.current[itemId] = requestId;
+
     setBatchItems((prev) =>
       prev.map((item) =>
         item.id === itemId
           ? {
               ...item,
+              requestId,
               status: 'analyzing',
               statusMessage:
-                'AI đang chủ động nhận diện thiết bị lọc nước, định vị chủ thể làm mờ nền và tự động cập nhật thông tin...',
+                options?.mode === 'ocr-only'
+                  ? 'Smart Recognition 2.0 đang quét OCR chữ trên tem nhãn và bao bì từ ảnh gốc...'
+                  : 'Smart Recognition 2.0 đang đọc chữ trên tem nhãn, đối chiếu từ điển ngành nước & chuẩn hóa tên sản phẩm...',
+              config: {
+                ...item.config,
+                // Lưu snapshot trước khi nhận diện lại để người dùng có thể Khôi phục nếu cần
+                previousSnapshot:
+                  item.config.productName &&
+                  !item.config.productName.startsWith('Đang nhận diện')
+                    ? {
+                        productName: item.config.productName,
+                        modelCode: item.config.modelCode,
+                        category: item.config.category,
+                        tagline: item.config.tagline,
+                        specs: [...item.config.specs] as [string, string, string],
+                        priceBadge: item.config.priceBadge,
+                        facebookCaption: item.config.facebookCaption,
+                        recognitionRecord: item.config.recognitionRecord,
+                      }
+                    : item.config.previousSnapshot,
+              },
             }
           : item
       )
     );
 
-    try {
-      const { base64, mimeType } = await imageUrlToDataUrl(imageUrl);
-      const response = await fetch('/api/gemini/analyze-product', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: base64,
-          mimeType,
-          existingName,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.analysis) {
-        setBatchItems((prev) =>
-          prev.map((item) =>
-            item.id === itemId
-              ? {
-                  ...item,
-                  status: 'error',
-                  statusMessage:
-                    data.error ||
-                    'Đã bật sẵn làm mờ nền & mở rộng khung. Bạn có thể tự chỉnh sửa thông tin sản phẩm ngay bên dưới.',
-                  config: {
-                    ...item.config,
-                    productName:
-                      item.config.productName === 'Đang nhận diện chủng loại thiết bị...'
-                        ? 'Thiết Bị Lọc Nước VUTECH'
-                        : item.config.productName,
-                  },
-                }
-              : item
-          )
-        );
-        return;
-      }
+    const urlsToAnalyze =
+      options?.multiAngleUrls && options.multiAngleUrls.length > 0
+        ? options.multiAngleUrls
+        : [imageUrl];
+    const namesToAnalyze =
+      options?.multiAngleNames && options.multiAngleNames.length > 0
+        ? options.multiAngleNames
+        : [existingName];
 
-      const a = data.analysis as {
-        productName?: string;
-        modelCode?: string;
-        category?: string;
-        specs?: string[];
-        tagline?: string;
-        priceBadge?: string;
-        facebookCaption?: string;
-        subjectBox?: { x?: number; y?: number; w?: number; h?: number };
-      };
-      const specsList = Array.isArray(a.specs) ? a.specs : [];
+    const result = await runSmartProductRecognitionPipeline({
+      sourceImageUrls: urlsToAnalyze,
+      fileNames: namesToAnalyze,
+      recognitionModel,
+      mode: options?.mode || 'full-recognition',
+      bypassCache: options?.bypassCache ?? false,
+    });
 
-      let nextSubjectBox = { x: 0.12, y: 0.08, w: 0.76, h: 0.84 };
-      if (a.subjectBox) {
-        const rawX = Number(a.subjectBox.x ?? 12);
-        const rawY = Number(a.subjectBox.y ?? 8);
-        const rawW = Number(a.subjectBox.w ?? 76);
-        const rawH = Number(a.subjectBox.h ?? 84);
-        const nx = Math.max(0, Math.min(0.65, rawX > 1 ? rawX / 100 : rawX));
-        const ny = Math.max(0, Math.min(0.65, rawY > 1 ? rawY / 100 : rawY));
-        const nw = Math.max(0.28, Math.min(1 - nx, rawW > 1 ? rawW / 100 : rawW));
-        const nh = Math.max(0.28, Math.min(1 - ny, rawH > 1 ? rawH / 100 : rawH));
-        nextSubjectBox = { x: nx, y: ny, w: nw, h: nh };
-      }
-
-      const detectedCategory = a.category?.trim();
-      const detectedProductName =
-        a.productName?.trim() ||
-        (detectedCategory ? `${detectedCategory} VUTECH` : '');
-
-      const loadedImg = await loadImage(imageUrl).catch(() => null);
-      const recommendedAspectRatio = loadedImg
-        ? recommendAspectRatioForSubject(
-            loadedImg.naturalWidth,
-            loadedImg.naturalHeight,
-            nextSubjectBox
-          )
-        : undefined;
-
-      setBatchItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                status: 'done',
-                statusMessage: `AI đã nhận diện "${detectedCategory || 'Thiết bị lọc nước'}", tự động căn khung chính vào vùng sản phẩm thực tế${
-                  recommendedAspectRatio
-                    ? ` (gợi ý tỷ lệ ${recommendedAspectRatio})`
-                    : ''
-                }. Bạn có thể mở cửa sổ Zoom để tinh chỉnh vị trí hoặc đổi kích thước.`,
-                config: {
-                  ...item.config,
-                  productName: detectedProductName || item.config.productName,
-                  modelCode: a.modelCode?.trim() || item.config.modelCode,
-                  category: detectedCategory || item.config.category,
-                  tagline: a.tagline?.trim() || item.config.tagline,
-                  priceBadge: a.priceBadge?.trim() || item.config.priceBadge,
-                  specs: [
-                    specsList[0] || item.config.specs[0],
-                    specsList[1] || item.config.specs[1],
-                    specsList[2] || item.config.specs[2],
-                  ],
-                  facebookCaption: a.facebookCaption || item.config.facebookCaption,
-                  subjectBox: nextSubjectBox,
-                  autoFrameSubject: true,
-                  recommendedAspectRatio,
-                  productScale: 1,
-                  productOffsetX: 0,
-                  productOffsetY: 0,
-                },
-              }
-            : item
-        )
-      );
-    } catch {
-      setBatchItems((prev) =>
-        prev.map((item) =>
-          item.id === itemId
-            ? {
-                ...item,
-                status: 'error',
-                statusMessage:
-                  'Đã tự động bật làm mờ nền & mở rộng khung. Không thể kết nối AI nhận diện lúc này — bạn vẫn có thể chỉnh sửa thông tin trực tiếp bên dưới.',
-                config: {
-                  ...item.config,
-                  productName:
-                    item.config.productName === 'Đang nhận diện chủng loại thiết bị...'
-                      ? 'Thiết Bị Lọc Nước VUTECH'
-                      : item.config.productName,
-                },
-              }
-            : item
-        )
-      );
+    // Kiểm tra requestId để đảm bảo kết quả bất đồng bộ không ghi đè sai ảnh nếu người dùng đổi ảnh khác
+    if (activeRequestMapRef.current[itemId] !== requestId) {
+      return;
     }
+
+    const { record, subjectBox, fromCache } = result;
+    const nextSubjectBox = subjectBox || { x: 0.12, y: 0.08, w: 0.76, h: 0.84 };
+
+    const loadedImg = await loadImage(imageUrl).catch(() => null);
+    const recommendedAspectRatio = loadedImg
+      ? recommendAspectRatioForSubject(
+          loadedImg.naturalWidth,
+          loadedImg.naturalHeight,
+          nextSubjectBox
+        )
+      : undefined;
+
+    const isErrorStatus = record.recognitionStatus === 'ERROR' || Boolean(record.apiError);
+    const confidencePct = Math.round(record.confidence * 100);
+
+    const statusMessage = isErrorStatus
+      ? `${record.apiError?.title || 'Cảnh báo kết nối API'} — Hệ thống đã kích hoạt bộ phân tích dự phòng. Bạn có thể chọn "Đối chiếu danh mục" bên dưới để nạp thông số chuẩn VUTECH.`
+      : `Đã nhận diện [${record.category}] → "${record.productName}" (Độ tin cậy: ${confidencePct}%${fromCache ? ' · Từ bộ nhớ đệm' : ''}).`;
+
+    setBatchItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item;
+        const updatedConfig = applyRecognitionRecordToStudioConfig(item.config, record, {
+          respectLocks: true,
+          subjectBox: nextSubjectBox,
+        });
+        return {
+          ...item,
+          status: isErrorStatus ? 'error' : 'done',
+          statusMessage,
+          config: {
+            ...updatedConfig,
+            autoFrameSubject: true,
+            recommendedAspectRatio,
+          },
+        };
+      })
+    );
+  };
+
+  /**
+   * Chế độ A: Hợp nhất thông tin từ tất cả các ảnh góc chụp trong đợt thành 01 hồ sơ sản phẩm thống nhất
+   * và đồng bộ sang toàn bộ các ảnh trong đợt.
+   */
+  const runMultiAngleSingleProductAnalysis = async (itemsToMerge: BatchProductItem[]) => {
+    if (itemsToMerge.length === 0) return;
+    const primaryItem = itemsToMerge[0];
+    const allUrls = itemsToMerge.map((it) => it.config.sourceImageUrl);
+    const allNames = itemsToMerge.map((it) => it.config.sourceImageName);
+
+    setBatchItems((prev) =>
+      prev.map((item) => ({
+        ...item,
+        status: 'analyzing',
+        statusMessage: `Chế độ A: Đang hợp nhất thông tin từ ${itemsToMerge.length} góc chụp của cùng 1 sản phẩm...`,
+      }))
+    );
+
+    const result = await runSmartProductRecognitionPipeline({
+      sourceImageUrls: allUrls,
+      fileNames: allNames,
+      recognitionModel,
+      mode: 'full-recognition',
+      bypassCache: true,
+    });
+
+    const { record, subjectBox } = result;
+    const isErrorStatus = record.recognitionStatus === 'ERROR' || Boolean(record.apiError);
+    const confidencePct = Math.round(record.confidence * 100);
+
+    setBatchItems((prev) =>
+      prev.map((item) => {
+        const updatedConfig = applyRecognitionRecordToStudioConfig(item.config, record, {
+          respectLocks: true,
+          subjectBox: item.id === primaryItem.id && subjectBox ? subjectBox : item.config.subjectBox,
+        });
+        return {
+          ...item,
+          status: isErrorStatus ? 'error' : 'done',
+          statusMessage: isErrorStatus
+            ? `${record.apiError?.title || 'Lỗi API'} — Vui lòng kiểm tra hoặc chọn Đối chiếu danh mục.`
+            : `Chế độ A (${itemsToMerge.length} góc chụp): Đã hợp nhất hồ sơ "${record.productName}" (Độ tin cậy ${confidencePct}%).`,
+          config: updatedConfig,
+        };
+      })
+    );
   };
 
   const handleUploadFiles = async (
@@ -354,7 +357,8 @@ export default function App() {
     );
     if (loaded.length === 0) return;
 
-    // Inherit active brand styling & immediately enable background blur + adaptive background extension
+    // Kế thừa cấu hình bố cục & thương hiệu NHƯNG TUYỆT ĐỐI KHÔNG kế thừa tên sản phẩm mẫu,
+    // KHÔNG tự gán VT-01..VT-05 và KHÔNG kế thừa 3 thông số của sản phẩm trước đó!
     const baseStyle = activeItem.config;
     const timestamp = Date.now();
     const createdItems: BatchProductItem[] = loaded.map((entry, idx) => ({
@@ -362,15 +366,24 @@ export default function App() {
       isSample: false,
       status: 'analyzing',
       statusMessage:
-        'AI đang chủ động nhận diện thiết bị lọc nước, định vị chủ thể làm mờ nền và tự động cập nhật thông tin...',
+        'Smart Recognition 2.0 đang đọc chữ trên tem nhãn từ ảnh gốc và chuẩn hóa dữ liệu sản phẩm...',
       config: {
         ...baseStyle,
         sourceImageUrl: entry.dataUrl,
         sourceImageName: entry.cleanName,
-        productName: 'Đang nhận diện chủng loại thiết bị...',
-        category: 'Thiết bị lọc nước VUTECH',
-        modelCode: `VT-${String(idx + 1).padStart(2, '0')}`,
-        specs: [...baseStyle.specs] as [string, string, string],
+        productName: 'Đang nhận diện sản phẩm...',
+        category: 'ĐANG PHÂN LOẠI...',
+        modelCode: '',
+        tagline: '',
+        specs: ['', '', ''],
+        priceBadge: '',
+        showPriceBadge: false,
+        showSpecsPanel: false,
+        facebookCaption: '',
+        recognitionRecord: undefined,
+        channelNames: undefined,
+        lockedFields: {},
+        previousSnapshot: undefined,
         productOffsetX: 0,
         productOffsetY: 0,
         productScale: 1,
@@ -385,21 +398,26 @@ export default function App() {
       },
     }));
 
-    if (shouldAppend) {
-      setBatchItems([...existingUploaded, ...createdItems]);
-    } else {
-      setBatchItems(createdItems);
-    }
+    const nextBatchList = shouldAppend
+      ? [...existingUploaded, ...createdItems]
+      : createdItems;
+
+    setBatchItems(nextBatchList);
     setActiveItemId(createdItems[0].id);
 
-    // Proactively run AI product recognition across all newly uploaded images in parallel
-    createdItems.forEach((item) => {
-      void runProductAnalysisForItem(
-        item.id,
-        item.config.sourceImageUrl,
-        item.config.sourceImageName
-      );
-    });
+    // Nếu đang ở Chế độ A (Nhiều góc chụp của cùng 1 sản phẩm) và có >1 ảnh: hợp nhất hồ sơ
+    if (batchRecognitionMode === 'multi-angle-single-product' && nextBatchList.length > 1) {
+      void runMultiAngleSingleProductAnalysis(nextBatchList);
+    } else {
+      // Chế độ B: Nhận diện độc lập từng ảnh theo itemId riêng biệt
+      createdItems.forEach((item) => {
+        void runProductAnalysisForItem(
+          item.id,
+          item.config.sourceImageUrl,
+          item.config.sourceImageName
+        );
+      });
+    }
   };
 
   const handleRemoveBatchItem = (id: string) => {
@@ -445,8 +463,11 @@ export default function App() {
                 tagline: found.tagline,
                 specs: [...found.specs] as [string, string, string],
                 priceBadge: found.priceBadge,
+                showPriceBadge: Boolean(found.priceBadge),
+                showSpecsPanel: true,
                 template: found.recommendedTemplate,
                 facebookCaption: found.facebookCaption,
+                recognitionRecord: found.recognitionRecord,
                 productOffsetX: 0,
                 productOffsetY: 0,
                 productScale: 1,
@@ -485,24 +506,70 @@ export default function App() {
     });
   };
 
-  const handleAnalyzeWithAi = async () => {
+  const handleAnalyzeWithAi = async (options?: {
+    bypassCache?: boolean;
+    mode?: 'full-recognition' | 'ocr-only';
+  }) => {
+    if (batchRecognitionMode === 'multi-angle-single-product' && batchItems.length > 1) {
+      await runMultiAngleSingleProductAnalysis(batchItems);
+      return;
+    }
     await runProductAnalysisForItem(
       activeItem.id,
       activeItem.config.sourceImageUrl,
-      activeItem.config.sourceImageName
+      activeItem.config.sourceImageName,
+      {
+        bypassCache: options?.bypassCache ?? true,
+        mode: options?.mode || 'full-recognition',
+      }
     );
   };
 
   const handleAnalyzeAllBatch = async () => {
+    if (batchRecognitionMode === 'multi-angle-single-product' && batchItems.length > 1) {
+      await runMultiAngleSingleProductAnalysis(batchItems);
+      return;
+    }
     await Promise.all(
       batchItems.map((item) =>
         runProductAnalysisForItem(
           item.id,
           item.config.sourceImageUrl,
-          item.config.sourceImageName
+          item.config.sourceImageName,
+          { bypassCache: true }
         )
       )
     );
+  };
+
+  /**
+   * Đồng bộ hồ sơ sản phẩm đã xác nhận sang toàn bộ ảnh trong đợt và chuyển tới Quy chuẩn Đa kênh nếu yêu cầu
+   */
+  const handleSyncVerifiedProductToAllChannels = (navigateToChannels = false) => {
+    const verifiedConfig = activeItem.config;
+    setBatchItems((prev) =>
+      prev.map((item) => ({
+        ...item,
+        config: {
+          ...item.config,
+          productName: verifiedConfig.productName,
+          modelCode: verifiedConfig.modelCode,
+          category: verifiedConfig.category,
+          tagline: verifiedConfig.tagline,
+          specs: [...verifiedConfig.specs] as [string, string, string],
+          priceBadge: verifiedConfig.priceBadge,
+          showPriceBadge: verifiedConfig.showPriceBadge,
+          showSpecsPanel: verifiedConfig.showSpecsPanel,
+          facebookCaption: verifiedConfig.facebookCaption,
+          recognitionRecord: verifiedConfig.recognitionRecord,
+          channelNames: verifiedConfig.channelNames,
+          lockedFields: verifiedConfig.lockedFields,
+        },
+      }))
+    );
+    if (navigateToChannels) {
+      setActiveTab('channels');
+    }
   };
 
   const handleExportCurrent = async () => {
@@ -630,6 +697,10 @@ export default function App() {
             activeItemId={activeItem.id}
             syncBatchLayout={syncBatchLayout}
             batchNotice={batchNotice}
+            batchRecognitionMode={batchRecognitionMode}
+            onChangeBatchRecognitionMode={setBatchRecognitionMode}
+            recognitionModel={recognitionModel}
+            onChangeRecognitionModel={setRecognitionModel}
             onToggleSyncBatchLayout={setSyncBatchLayout}
             onSelectBatchItem={setActiveItemId}
             onRemoveBatchItem={handleRemoveBatchItem}
@@ -639,6 +710,7 @@ export default function App() {
             onSelectSample={handleSelectSample}
             onAnalyzeWithAi={handleAnalyzeWithAi}
             onAnalyzeAllBatch={handleAnalyzeAllBatch}
+            onApplyToAllMultiChannel={() => handleSyncVerifiedProductToAllChannels(true)}
             isAnalyzing={activeItem.status === 'analyzing'}
             analyzingCount={analyzingCount}
             analyzeMessage={activeItem.statusMessage}

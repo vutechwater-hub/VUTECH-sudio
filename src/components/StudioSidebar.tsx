@@ -26,11 +26,14 @@ import {
 import type {
   BackdropPreset,
   BatchProductItem,
+  BatchRecognitionMode,
   LogoMode,
   LogoPosition,
   PlatformKey,
+  RecognitionModelOption,
   StudioConfig,
 } from '../types/studio';
+import { SmartRecognitionPanel } from './SmartRecognitionPanel';
 
 interface StudioSidebarProps {
   config: StudioConfig;
@@ -38,6 +41,10 @@ interface StudioSidebarProps {
   activeItemId: string;
   syncBatchLayout: boolean;
   batchNotice: string | null;
+  batchRecognitionMode: BatchRecognitionMode;
+  onChangeBatchRecognitionMode: (mode: BatchRecognitionMode) => void;
+  recognitionModel: RecognitionModelOption;
+  onChangeRecognitionModel: (model: RecognitionModelOption) => void;
   onToggleSyncBatchLayout: (value: boolean) => void;
   onSelectBatchItem: (id: string) => void;
   onRemoveBatchItem: (id: string) => void;
@@ -45,8 +52,12 @@ interface StudioSidebarProps {
   onChange: (patch: Partial<StudioConfig>) => void;
   onUploadFiles: (files: File[], mode?: 'auto' | 'append' | 'replace') => void;
   onSelectSample: (sampleId: string) => void;
-  onAnalyzeWithAi: () => Promise<void>;
+  onAnalyzeWithAi: (options?: {
+    bypassCache?: boolean;
+    mode?: 'full-recognition' | 'ocr-only';
+  }) => Promise<void>;
   onAnalyzeAllBatch: () => Promise<void>;
+  onApplyToAllMultiChannel: () => void;
   isAnalyzing: boolean;
   analyzingCount: number;
   analyzeMessage: string | null;
@@ -64,6 +75,10 @@ export function StudioSidebar({
   activeItemId,
   syncBatchLayout,
   batchNotice,
+  batchRecognitionMode,
+  onChangeBatchRecognitionMode,
+  recognitionModel,
+  onChangeRecognitionModel,
   onToggleSyncBatchLayout,
   onSelectBatchItem,
   onRemoveBatchItem,
@@ -73,6 +88,7 @@ export function StudioSidebar({
   onSelectSample,
   onAnalyzeWithAi,
   onAnalyzeAllBatch,
+  onApplyToAllMultiChannel,
   isAnalyzing,
   analyzingCount,
   analyzeMessage,
@@ -338,7 +354,9 @@ export function StudioSidebar({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={onAnalyzeWithAi}
+                  onClick={() => {
+                    void onAnalyzeWithAi({ bypassCache: true, mode: 'full-recognition' });
+                  }}
                   disabled={isAnalyzing}
                   className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-[#0052B4] bg-[#0052B4]/8 hover:bg-[#0052B4]/14 border border-[#0052B4]/20 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
                 >
@@ -899,8 +917,26 @@ export function StudioSidebar({
 
         {inspectorTab === 'info' && (
           <>
+            {/* MỤC XIII: GIAO DIỆN KIỂM TRA VÀ XÁC NHẬN DỮ LIỆU "KẾT QUẢ NHẬN DIỆN AI 2.0" */}
+            <SmartRecognitionPanel
+              config={config}
+              batchCount={batchItems.length}
+              batchRecognitionMode={batchRecognitionMode}
+              onChangeBatchRecognitionMode={onChangeBatchRecognitionMode}
+              recognitionModel={recognitionModel}
+              onChangeRecognitionModel={onChangeRecognitionModel}
+              isAnalyzing={isAnalyzing}
+              onChangeConfig={onChange}
+              onReRecognize={(opts) => {
+                void onAnalyzeWithAi(opts);
+              }}
+              onApplyToAllMultiChannel={onApplyToAllMultiChannel}
+            />
+
+            <hr className="border-slate-200" />
+
             <section className="space-y-3.5">
-              <h2 className="text-sm font-bold text-slate-900">Thông tin sản phẩm trên ảnh</h2>
+              <h2 className="text-sm font-bold text-slate-900">Thông tin hiển thị trực tiếp trên khung ảnh</h2>
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-semibold text-slate-700">
